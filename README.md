@@ -9,7 +9,7 @@ Pensado para rodar em um **terminal separado** ao lado das suas sessões Claude 
 - Tamanho do `CLAUDE.md`, da memória do projeto, agentes lançados e skills invocadas
 - Chat com Claude (Haiku por padrão) ciente do estado do painel
 
-Versão atual: **v1.01.01**
+Versão atual: **v1.01.02**
 
 ![iccmonit em execução — painel de cota, sessões e chat focado](docs/img/screenshot.jpg)
 
@@ -70,17 +70,21 @@ Abre a TUI no terminal atual. Ideal para rodar lado-a-lado com as sessões Claud
 ### Modo web
 
 ```bash
-./start.sh web              # http://localhost:8000  (porta padrão)
+./start.sh web              # http://localhost:8000  (porta padrão, abre o navegador)
 ./start.sh web 9000         # http://localhost:9000  (porta custom)
 ```
 
-Usa o pacote **`textual-serve`** para empacotar a TUI atual num WebSocket + xterm.js no navegador, sem mudança de código. O servidor (`serve.py`) faz bind em `0.0.0.0` para aceitar conexões da LAN. Útil pra:
+Usa o pacote **`textual-serve`** para empacotar a TUI atual num WebSocket + xterm.js no navegador, sem mudança de código. O servidor (`serve.py`) faz bind em `127.0.0.1` (apenas local) e abre o navegador automaticamente. Pra acesso remoto, use SSH tunnel:
+
+```bash
+ssh -L 8000:localhost:8000 usuario@maquina
+``` Útil pra:
 
 - Acompanhar de outra máquina na rede local (acesse `http://<ip-da-maquina>:8000`)
 - Manter o monitor visível num browser sem ocupar terminal
 - Compartilhar visão temporária com colegas na mesma rede
 
-> **Atenção**: o modo web **não tem autenticação**. Não exponha em rede pública — use só em rede local de confiança ou atrás de VPN/SSH tunnel.
+> **Atenção**: o modo web **não tem autenticação** e por isso bind em `127.0.0.1` (apenas local). Pra acessar de outra máquina, use SSH tunnel — nunca abra a porta direto na rede.
 
 ### Ajuda
 
@@ -320,6 +324,7 @@ A versão é exibida no título da janela TUI (header).
 | `Ctx%` zerado | Transcript ainda sem mensagem `assistant` com `usage` | Use a sessão um pouco — depois da primeira resposta o valor aparece |
 | Modo web não abre | Porta ocupada | Tente outra porta: `./start.sh web 9001` |
 | Modo web abre o "demo" do Textual | Versão antiga sem `textual-serve` | Atualize: `git pull` (a partir de v1.01.01 usa `textual-serve` separado) |
+| Modo web mostra só o logo "iccmonit" e não carrega a TUI | Versão `v1.01.01` bindando em `0.0.0.0` (websocket inválido no navegador) | Atualize pra `v1.01.02`+ — bind virou `127.0.0.1` |
 | Erro `ImportError: textual` | Dependências não instaladas | Rode `pip install textual anthropic --break-system-packages` ou simplesmente `./start.sh` (instala automaticamente) |
 
 ---

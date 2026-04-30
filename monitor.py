@@ -18,7 +18,7 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.01.01"  # v1.xx.yy → xx=recurso, yy=bug (sequencial até mudar a major)
+VERSION = "v1.01.02"  # v1.xx.yy → xx=recurso, yy=bug (sequencial até mudar a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
