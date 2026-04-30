@@ -11,6 +11,8 @@ Pensado para rodar em um **terminal separado** ao lado das suas sessões Claude 
 
 Versão atual: **v1.01.00**
 
+![iccmonit em execução — painel de cota, sessões e chat focado](docs/img/screenshot.jpg)
+
 ---
 
 ## Sumário
