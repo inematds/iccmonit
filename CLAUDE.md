@@ -16,12 +16,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Teclas: `r` = refresh manual, `q` = sair.
 
-Modo web usa `python3 -m textual serve` — empacota a TUI atual num WebSocket+xterm.js sem mudança de código.
+Modo web usa o pacote `textual-serve` (via `serve.py`) — empacota a TUI atual num WebSocket+xterm.js, bind em `0.0.0.0`. Importante: **não use** `python3 -m textual serve` (abre o demo do Textual).
 
 ## Dependências
 
 ```bash
-pip install textual anthropic --break-system-packages
+pip install textual anthropic --break-system-packages           # terminal
+pip install textual-serve --break-system-packages               # web
 ```
 
 ## Arquitetura

@@ -9,7 +9,7 @@ Pensado para rodar em um **terminal separado** ao lado das suas sessões Claude 
 - Tamanho do `CLAUDE.md`, da memória do projeto, agentes lançados e skills invocadas
 - Chat com Claude (Haiku por padrão) ciente do estado do painel
 
-Versão atual: **v1.01.00**
+Versão atual: **v1.01.01**
 
 ![iccmonit em execução — painel de cota, sessões e chat focado](docs/img/screenshot.jpg)
 
@@ -53,7 +53,8 @@ chmod +x start.sh
 Dependências (instaladas automaticamente pelo `start.sh` se faltarem):
 
 ```bash
-pip install textual anthropic --break-system-packages
+pip install textual anthropic --break-system-packages           # modo terminal
+pip install textual-serve --break-system-packages               # modo web (extra)
 ```
 
 ## Uso
@@ -73,7 +74,7 @@ Abre a TUI no terminal atual. Ideal para rodar lado-a-lado com as sessões Claud
 ./start.sh web 9000         # http://localhost:9000  (porta custom)
 ```
 
-Usa **`textual serve`** para empacotar a TUI atual num WebSocket + xterm.js no navegador, sem mudança de código. Útil pra:
+Usa o pacote **`textual-serve`** para empacotar a TUI atual num WebSocket + xterm.js no navegador, sem mudança de código. O servidor (`serve.py`) faz bind em `0.0.0.0` para aceitar conexões da LAN. Útil pra:
 
 - Acompanhar de outra máquina na rede local (acesse `http://<ip-da-maquina>:8000`)
 - Manter o monitor visível num browser sem ocupar terminal
@@ -252,12 +253,14 @@ Habilita/desabilita mensagens de alerta individualmente:
 ```
 iccmonit/
 ├── monitor.py     # TUI principal (Textual) — V1
+├── serve.py       # Wrapper de modo web via textual-serve
 ├── start.sh       # Entrypoint: terminal e modo web
 ├── config.json    # Thresholds, alertas, chat, refresh
 ├── README.md      # Este arquivo
 ├── CLAUDE.md      # Instruções do projeto pra Claude Code
 ├── .gitignore
 └── docs/
+    ├── img/         # Screenshots
     ├── PLAN.md      # Plano original e decisões de arquitetura
     └── RESEARCH.md  # Pesquisa das fontes de dados do Claude Code
 ```
@@ -316,6 +319,7 @@ A versão é exibida no título da janela TUI (header).
 | Tabela vazia | Nenhuma sessão Claude Code ativa | Abra uma sessão `claude` em outro terminal e dê `r` para refresh |
 | `Ctx%` zerado | Transcript ainda sem mensagem `assistant` com `usage` | Use a sessão um pouco — depois da primeira resposta o valor aparece |
 | Modo web não abre | Porta ocupada | Tente outra porta: `./start.sh web 9001` |
+| Modo web abre o "demo" do Textual | Versão antiga sem `textual-serve` | Atualize: `git pull` (a partir de v1.01.01 usa `textual-serve` separado) |
 | Erro `ImportError: textual` | Dependências não instaladas | Rode `pip install textual anthropic --break-system-packages` ou simplesmente `./start.sh` (instala automaticamente) |
 
 ---

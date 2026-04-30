@@ -12,6 +12,14 @@ ensure_deps() {
     fi
 }
 
+ensure_web_deps() {
+    ensure_deps
+    if ! python3 -c "import textual_serve" 2>/dev/null; then
+        echo "Instalando textual-serve (modo web)..."
+        pip install textual-serve --break-system-packages
+    fi
+}
+
 usage() {
     cat <<EOF
 Uso:
@@ -23,10 +31,9 @@ EOF
 
 case "${1:-}" in
     web)
-        ensure_deps
+        ensure_web_deps
         PORT="${2:-$DEFAULT_WEB_PORT}"
-        echo "Servindo em http://localhost:${PORT}  (Ctrl+C para sair)"
-        exec python3 -m textual serve --port "$PORT" "python3 monitor.py"
+        exec python3 serve.py "$PORT"
         ;;
     -h|--help|help)
         usage
