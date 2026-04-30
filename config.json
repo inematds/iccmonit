@@ -1,0 +1,70 @@
+{
+  "title": "INEMA Claude Monitor",
+  "refresh_interval_seconds": 10,
+
+  "thresholds": {
+    "quota_pct": {
+      "blue":   20,
+      "green":  60,
+      "yellow": 85,
+      "red":    95,
+      "notes": "% de uso da cota (5h, 7d, 7d-sonnet). Azul=folgado, Verde=normal, Amarelo=atenção, Vermelho=crítico"
+    },
+    "context_pct": {
+      "blue":   10,
+      "green":  50,
+      "yellow": 75,
+      "red":    90,
+      "notes": "% da janela de contexto usada por sessão. >90% = risco de compaction automática"
+    },
+    "memory_kb": {
+      "blue":   0,
+      "green":  100,
+      "yellow": 300,
+      "red":    600,
+      "notes": "Tamanho total da memória do projeto em KB. >600KB = memória excessiva, revisar com /memory-audit"
+    },
+    "memory_files": {
+      "blue":   0,
+      "green":  10,
+      "yellow": 20,
+      "red":    35,
+      "notes": "Número de arquivos de memória. >35 arquivos = fragmentação excessiva"
+    },
+    "claude_md_bytes": {
+      "blue":   0,
+      "green":  8192,
+      "yellow": 20480,
+      "red":    40960,
+      "notes": "Tamanho do CLAUDE.md em bytes. >40KB = muito longo, pode impactar contexto"
+    },
+    "agents_per_session": {
+      "blue":   0,
+      "green":  5,
+      "yellow": 15,
+      "red":    30,
+      "notes": "Agentes lançados na sessão. >30 = sessão muito pesada, considerar dividir"
+    },
+    "cost_per_session_usd": {
+      "blue":   0.0,
+      "green":  2.0,
+      "yellow": 8.0,
+      "red":    20.0,
+      "notes": "Custo acumulado por sessão em USD. >$20 = sessão cara, verificar eficiência"
+    }
+  },
+
+  "alerts": {
+    "quota_5h_red":    { "enabled": true,  "message": "⚠ Cota 5h crítica!" },
+    "quota_7d_red":    { "enabled": true,  "message": "⚠ Cota semanal crítica!" },
+    "context_red":     { "enabled": true,  "message": "⚠ Contexto alto — risco de compaction" },
+    "memory_red":      { "enabled": true,  "message": "⚠ Memória excessiva — rode /memory-audit" },
+    "claude_md_red":   { "enabled": false, "message": "⚠ CLAUDE.md muito grande" },
+    "cost_red":        { "enabled": true,  "message": "⚠ Sessão cara" }
+  },
+
+  "chat": {
+    "model": "claude-haiku-4-5-20251001",
+    "max_tokens": 1024
+  }
+}
