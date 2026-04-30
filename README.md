@@ -9,7 +9,7 @@ Pensado para rodar em um **terminal separado** ao lado das suas sessões Claude 
 - Tamanho do `CLAUDE.md`, da memória do projeto, agentes lançados e skills invocadas
 - Chat com Claude (Haiku por padrão) ciente do estado do painel
 
-Versão atual: **v1.00.00**
+Versão atual: **v1.01.00**
 
 ---
 
@@ -132,15 +132,33 @@ Cada métrica recebe cor azul/verde/amarelo/vermelho conforme thresholds em `con
 
 ### 3. Chat (rodapé)
 
-Chat embutido com Claude que recebe **o estado completo do painel** como system prompt — então pode responder coisas como:
+Chat embutido com Claude com **dois modos**:
+
+**Modo geral** (padrão) — recebe o estado completo do painel como system prompt:
 
 - "Qual sessão tá usando mais contexto?"
 - "Quanto falta pra cota Sonnet?"
 - "Algum projeto com memória crítica?"
 
-Modelo padrão: `claude-haiku-4-5-20251001` (configurável em `config.json` → `chat.model`).
+**Modo focado** — selecione uma linha da tabela (↑/↓ + **Enter**) e o chat carrega o transcript daquela sessão como contexto. Aí dá pra perguntar sobre o trabalho específico:
 
-Autenticação via OAuth do próprio Claude Code (token em `~/.claude/.credentials.json`). Se o chat aparecer indisponível, é porque o token não foi encontrado.
+- "O que essa sessão tá fazendo agora?"
+- "Qual foi o último erro?"
+- "Resume o que foi feito até agora."
+- "Por que ele tomou essa decisão?"
+
+> O chat é um **observador analítico** — não interage com o agente daquela sessão, só lê o transcript. Pra interação remota real, ver V2 no roadmap.
+
+#### Comandos do chat
+
+| Comando | Ação |
+|---------|------|
+| `/clear` | Volta ao modo geral (limpa o foco e o histórico) |
+| `/help`  | Lista de comandos |
+
+Trocar de foco também limpa o histórico do chat — pra não misturar conversas.
+
+Modelo padrão: `claude-haiku-4-5-20251001` (configurável em `config.json` → `chat.model`). Autenticação via OAuth do Claude Code (token em `~/.claude/.credentials.json`).
 
 ---
 
@@ -278,11 +296,12 @@ A versão é exibida no título da janela TUI (header).
 
 ## Roadmap
 
-- **V1** *(atual)* — painel de sessões + cota + chat geral com contexto do painel + modo web (`./start.sh web`)
-- **V2** *(planejado)* — interação remota com sessão ativa: selecionar uma sessão na tabela e injetar prompts nela como se estivesse no terminal original. Mecanismo a investigar:
+- **V1** *(atual)* — painel de sessões + cota + chat geral + chat focado em sessão (read-only) + modo web
+- **V2** *(planejado)* — interação remota com sessão ativa: injetar prompts numa sessão como se estivesse no terminal original. Mecanismo a investigar:
   - stdin do processo Claude Code
   - arquivo de IPC
-  - ou canal próprio do Claude Code (sem API oficial — requer pesquisa)
+  - ou `claude --resume <sessionId>` num processo paralelo (forka, não dirige a sessão original)
+  - sem API oficial — requer pesquisa
 
 ---
 

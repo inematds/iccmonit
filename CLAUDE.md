@@ -65,7 +65,7 @@ Alertas podem ser habilitados/desabilitados individualmente em `alerts`. O model
 
 ## Plano de versões
 
-- **V1 (atual)** — painel de sessões + cota + chat geral com contexto do painel
+- **V1 (atual)** — painel de sessões + cota + chat geral + chat focado por sessão (clique na linha → transcript vira contexto, read-only) + modo web
 - **V2** — interação remota com sessão ativa (injetar prompts em sessão Claude Code em execução — mecanismo a investigar)
 
 ## Esquema de versionamento

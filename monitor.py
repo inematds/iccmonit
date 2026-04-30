@@ -14,10 +14,11 @@ from anthropic import Anthropic
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, ScrollableContainer
+from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.00.00"  # v1.xx.yy → xx=recurso, yy=bug (sequencial até mudar a major)
+VERSION = "v1.01.00"  # v1.xx.yy → xx=recurso, yy=bug (sequencial até mudar a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -292,12 +293,21 @@ class QuotaBar(Static):
 class SessionTable(Static):
     SESSIONS: reactive[list] = reactive([])
 
+    class SessionSelected(Message):
+        def __init__(self, session_id: str) -> None:
+            super().__init__()
+            self.session_id = session_id
+
     def compose(self) -> ComposeResult:
-        yield DataTable(id="session-table", show_cursor=True)
+        yield DataTable(id="session-table", show_cursor=True, cursor_type="row")
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
         table.add_columns("Projeto", "Status", "Modelo", "Ctx%", "CLAUDE.md", "Mem", "Agts", "Skls", "Update")
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if event.row_key and event.row_key.value:
+            self.post_message(self.SessionSelected(str(event.row_key.value)))
 
     def update_sessions(self, sessions: list[dict]) -> None:
         table = self.query_one(DataTable)
@@ -324,6 +334,85 @@ class SessionTable(Static):
                 ago(s.get("updatedAt", 0)),
                 key=s.get("sessionId"),
             )
+
+
+def load_session_messages(session: dict, max_chars: int = 25000) -> str:
+    """Extrai turns user/assistant recentes do transcript da sessão."""
+    cwd = session.get("cwd", "")
+    session_id = session.get("sessionId", "")
+    encoded = encode_cwd(cwd)
+    transcript = None
+    for prefix in ["", "-"]:
+        p = PROJECTS_DIR / f"{prefix}{encoded}" / f"{session_id}.jsonl"
+        if p.exists():
+            transcript = p
+            break
+    if not transcript:
+        return "(transcript não encontrado)"
+
+    turns: list[tuple[str, str]] = []
+    try:
+        with open(transcript) as f:
+            for line in f:
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if obj.get("type") not in ("user", "assistant"):
+                    continue
+                role = obj.get("type")
+                content = obj.get("message", {}).get("content", "")
+                if isinstance(content, list):
+                    parts = []
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        bt = block.get("type")
+                        if bt == "text":
+                            parts.append(block.get("text", ""))
+                        elif bt == "tool_use":
+                            parts.append(f"[tool_use: {block.get('name', '?')}]")
+                        elif bt == "tool_result":
+                            parts.append("[tool_result]")
+                    content = "\n".join(p for p in parts if p)
+                if not isinstance(content, str) or not content.strip():
+                    continue
+                turns.append((role, content.strip()))
+    except Exception:
+        return "(erro lendo transcript)"
+
+    out: list[str] = []
+    total = 0
+    for role, text in reversed(turns):
+        snippet = f"[{role}] {text[:2500]}"
+        if total + len(snippet) > max_chars:
+            break
+        out.append(snippet)
+        total += len(snippet)
+    out.reverse()
+    return "\n\n".join(out) if out else "(sessão sem mensagens textuais)"
+
+
+def build_session_prompt(focus: dict, sessions: list[dict], quota: dict) -> str:
+    """System prompt quando o chat está focado numa sessão específica."""
+    base = build_system_prompt(sessions, quota)
+    transcript_excerpt = load_session_messages(focus)
+    extra = f"""
+
+## Sessão em foco
+
+Você está focado em discutir UMA sessão específica abaixo. Responda perguntas SOBRE essa sessão usando o transcript como referência. Você é um observador analítico — NÃO finja ser o usuário ou o agente daquela sessão.
+
+- Projeto: {short_project(focus.get('cwd', ''))}
+- cwd: {focus.get('cwd', '')}
+- sessionId: {focus.get('sessionId', '')}
+- Status: {focus.get('status', '?')}
+
+### Transcript recente (últimas mensagens textuais)
+
+{transcript_excerpt}
+"""
+    return base + extra
 
 
 def build_system_prompt(sessions: list[dict], quota: dict) -> str:
@@ -367,42 +456,83 @@ def build_system_prompt(sessions: list[dict], quota: dict) -> str:
 class ChatPane(Vertical):
     def compose(self) -> ComposeResult:
         yield RichLog(id="chat-log", highlight=True, markup=True, wrap=True)
-        yield Input(placeholder="mensagem... (Enter envia)", id="chat-input")
+        yield Input(placeholder="mensagem... (Enter envia · /help pra comandos)", id="chat-input")
 
     def on_mount(self) -> None:
         self._client: Optional[Anthropic] = None
         self._history: list[dict] = []
         self._sessions: list[dict] = []
         self._quota: dict = {}
+        self._focus_session_id: Optional[str] = None
         token = get_oauth_token()
+        log = self.query_one("#chat-log", RichLog)
         if token:
             self._client = Anthropic(
                 base_url="https://api.anthropic.com",
                 auth_token=token,
                 default_headers={"anthropic-beta": "oauth-2025-04-20"},
             )
-            self.query_one("#chat-log", RichLog).write(
-                "[dim]Chat pronto — ciente do estado do painel. Modelo: haiku-4-5[/]"
-            )
+            log.write("[dim]Chat pronto — ciente do estado do painel. Modelo: haiku-4-5[/]")
+            log.write("[dim]Selecione uma linha da tabela e Enter pra focar numa sessão. /help pra comandos.[/]")
         else:
-            self.query_one("#chat-log", RichLog).write(
-                "[red]Token OAuth não encontrado. Chat indisponível.[/]"
-            )
+            log.write("[red]Token OAuth não encontrado. Chat indisponível.[/]")
 
     def update_context(self, sessions: list[dict], quota: dict) -> None:
         self._sessions = sessions
         self._quota = quota
 
+    def set_focus(self, session_id: Optional[str]) -> None:
+        self._focus_session_id = session_id
+        self._history = []
+        log = self.query_one("#chat-log", RichLog)
+        if session_id:
+            s = next((x for x in self._sessions if x.get("sessionId") == session_id), None)
+            proj = short_project(s.get("cwd", "")) if s else "?"
+            log.write(f"[bold magenta]→ focado em:[/] {proj} [dim]({session_id[:8]})[/]")
+            log.write("[dim]histórico anterior limpo. /clear pra voltar ao modo geral.[/]")
+        else:
+            log.write("[bold]→ modo geral[/] [dim](perguntas sobre todas as sessões)[/]")
+
+    def _handle_command(self, cmd: str, log: RichLog) -> None:
+        cmd = cmd.strip()
+        if cmd == "/clear":
+            self.set_focus(None)
+        elif cmd == "/help":
+            log.write("[bold]comandos:[/]")
+            log.write("  [cyan]/clear[/]  → volta ao modo geral (sem foco)")
+            log.write("  [cyan]/help[/]   → esta ajuda")
+            log.write("[dim]Para focar numa sessão: navegue na tabela com ↑/↓ e Enter.[/]")
+        else:
+            log.write(f"[red]comando desconhecido:[/] {cmd}  [dim](tente /help)[/]")
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         msg = event.value.strip()
-        if not msg or not self._client:
+        if not msg:
             return
         event.input.value = ""
         log = self.query_one("#chat-log", RichLog)
+
+        if msg.startswith("/"):
+            self._handle_command(msg, log)
+            return
+
+        if not self._client:
+            log.write("[red]chat indisponível (sem token oauth)[/]")
+            return
+
         log.write(f"[bold cyan]você:[/] {msg}")
         self._history.append({"role": "user", "content": msg})
         try:
-            system = build_system_prompt(self._sessions, self._quota)
+            focus = None
+            if self._focus_session_id:
+                focus = next(
+                    (x for x in self._sessions if x.get("sessionId") == self._focus_session_id),
+                    None,
+                )
+            if focus:
+                system = build_session_prompt(focus, self._sessions, self._quota)
+            else:
+                system = build_system_prompt(self._sessions, self._quota)
             chat_cfg = CONFIG.get("chat", {})
             response = self._client.messages.create(
                 model=chat_cfg.get("model", "claude-haiku-4-5-20251001"),
@@ -499,6 +629,9 @@ class MonitorApp(App):
 
     def action_refresh(self) -> None:
         self.refresh_data()
+
+    def on_session_table_session_selected(self, event: SessionTable.SessionSelected) -> None:
+        self.query_one(ChatPane).set_focus(event.session_id)
 
 
 if __name__ == "__main__":
