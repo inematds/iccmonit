@@ -18,7 +18,7 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.08.03"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.09.03"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -983,11 +983,11 @@ class MonitorApp(App):
         height: 1fr;
     }
     #left-column {
-        width: 2fr;
+        width: 50%;
         height: 1fr;
     }
     #right-column {
-        width: 1fr;
+        width: 50%;
         height: 1fr;
     }
     #quota-section, #system-section {
@@ -1035,11 +1035,15 @@ class MonitorApp(App):
         Binding("a", "toggle_all", "Todas/Ativas"),
         Binding("p", "toggle_processes", "Processos"),
         Binding("s", "toggle_sort", "Sort CPU/RAM"),
+        Binding("comma", "shrink_left", "← chat"),
+        Binding("full_stop", "grow_left", "→ chat"),
+        Binding("equals_sign", "reset_split", "Reset 50/50"),
     ]
 
     show_all_sessions: reactive[bool] = reactive(False)
     show_processes: reactive[bool] = reactive(False)
     proc_sort: reactive[str] = reactive("cpu")
+    left_ratio: reactive[int] = reactive(50)
 
     TITLE = f"{CONFIG.get('title', 'INEMA Claude Monitor')} {VERSION}"
 
@@ -1119,6 +1123,23 @@ class MonitorApp(App):
             return
         self.proc_sort = "mem" if self.proc_sort == "cpu" else "cpu"
         self.refresh_data()
+
+    # ── divisor lateral ─────────────────────────────────────────────────────
+    def watch_left_ratio(self, value: int) -> None:
+        try:
+            self.query_one("#left-column").styles.width = f"{value}%"
+            self.query_one("#right-column").styles.width = f"{100 - value}%"
+        except Exception:
+            pass
+
+    def action_shrink_left(self) -> None:
+        self.left_ratio = max(20, self.left_ratio - 5)
+
+    def action_grow_left(self) -> None:
+        self.left_ratio = min(80, self.left_ratio + 5)
+
+    def action_reset_split(self) -> None:
+        self.left_ratio = 50
 
     def on_session_table_session_selected(self, event: SessionTable.SessionSelected) -> None:
         self.query_one(ChatPane).set_focus(event.session_id)
