@@ -9,7 +9,7 @@ Pensado para rodar em um **terminal separado** ao lado das suas sessões Claude 
 - Tamanho do `CLAUDE.md`, da memória do projeto, agentes lançados e skills invocadas
 - Chat com Claude (Haiku por padrão) ciente do estado do painel
 
-Versão atual: **v1.03.00**
+Versão atual: **v1.04.00**
 
 ![iccmonit em execução — painel de cota, sessões e chat focado](docs/img/screenshot.jpg)
 
@@ -172,13 +172,38 @@ Chat embutido com Claude com **dois modos**:
 
 | Comando | Ação |
 |---------|------|
-| `/help`  | Ajuda completa (TUI + chat + roadmap) |
-| `/clear` | Volta ao modo geral (limpa o foco e o histórico) |
-| `/log`   | Mostra as últimas 20 linhas do log de chat |
-| `/where` | Imprime os caminhos do log, config e diretório de projects |
-| `/fork`  | *(roadmap V2)* — abrir nova sessão Claude Code continuando a focada |
+| `/help`   | Ajuda completa (TUI + chat + skills + roadmap) |
+| `/diag`   | Diagnóstico do painel — lista cota e sessões em alerta (🟡/🔴) com sugestões |
+| `/skills` | 3 skills úteis pra rodar nas sessões focadas (statusline / memory-audit / handoff) |
+| `/clear`  | Volta ao modo geral (limpa o foco e o histórico) |
+| `/log`    | Mostra as últimas 20 linhas do log de chat |
+| `/where`  | Imprime os caminhos do log, config e diretório de projects |
+| `/fork`   | *(roadmap V2)* — abrir nova sessão Claude Code continuando a focada |
 
 Trocar de foco também limpa o histórico do chat — pra não misturar conversas.
+
+#### Diagnóstico do painel — `/diag`
+
+Roda regras locais sobre os thresholds do `config.json` e devolve só o que está em **🟡 yellow** ou **🔴 red**:
+
+- Cotas (5h, 7d, 7d Sonnet) em alerta
+- Sessões com `Ctx%` alto (risco de auto-compaction)
+- Sessões com memória ou `CLAUDE.md` inchados
+- Sessões com muitos agentes lançados
+
+Quando algo aparece, sugere a skill apropriada do `skillmanager3x` (`session-handoff`, `memory-audit`, etc).
+
+#### Skills úteis — `/skills`
+
+Lista as 3 skills do [skillmanager3x](https://github.com/inematds/skillmanager3x) com **quando usar cada uma**:
+
+| Skill | Quando rodar |
+|-------|--------------|
+| **session-statusline** | Checkpoint operacional rápido durante o trabalho. Triggers: "onde estamos", "checkpoint", "organiza a sessão". |
+| **memory-audit**       | Quando o painel mostra memória 🟡/🔴 ou CLAUDE.md grande. Triggers: "analise a memória", "memória inchada", "limpa memória". |
+| **session-handoff**    | Antes de `/clear` ou quando ctx 🔴. Gera resumo pra um agente fresco continuar. Triggers: "vou dar /clear", "handoff", "encerrar sessão". |
+
+Como rodar: na sessão Claude Code alvo, digite o trigger ou `/<skill-name>`.
 
 #### Log de chat
 

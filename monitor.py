@@ -18,7 +18,7 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.03.00"  # v1.xx.yy → xx=recurso, yy=bug (sequencial até mudar a major)
+VERSION = "v1.04.00"  # v1.xx.yy → xx=recurso, yy=bug (sequencial até mudar a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -448,6 +448,53 @@ def load_session_messages(session: dict, max_chars: int = 25000) -> str:
     return "\n\n".join(out) if out else "(sessão sem mensagens textuais)"
 
 
+def diagnose_panel(sessions: list[dict], quota: dict) -> list[str]:
+    """Roda regras simples sobre painel + cota e devolve achados (yellow/red)."""
+    out: list[str] = []
+
+    # ── cota ─────────────────────────────────────────────────────────────────
+    for label, key in (("5h", "five_hour"), ("7d", "seven_day"), ("7d Sonnet", "seven_day_sonnet")):
+        q = quota.get(key, {}) or {}
+        pct = q.get("utilization")
+        if pct is None:
+            continue
+        color = color_for(pct, "quota_pct")
+        if color == "red":
+            out.append(f"[red]🔴 cota {label} em {pct:.0f}%[/] — reset {utc_to_local(q.get('resets_at',''))}")
+        elif color == "yellow":
+            out.append(f"[yellow]🟡 cota {label} em {pct:.0f}%[/] — reset {utc_to_local(q.get('resets_at',''))}")
+
+    # ── por sessão ───────────────────────────────────────────────────────────
+    for s in sessions:
+        proj = short_project(s.get("cwd", ""))
+        _, _, ctx_pct = get_transcript_usage(s)
+        extras = get_session_extras(s)
+
+        ctx_color = color_for(ctx_pct, "context_pct")
+        if ctx_color == "red":
+            out.append(f"[red]🔴 {proj}[/] ctx {ctx_pct:.0f}% — risco de auto-compaction. Considere [cyan]session-handoff[/] antes de /clear.")
+        elif ctx_color == "yellow":
+            out.append(f"[yellow]🟡 {proj}[/] ctx {ctx_pct:.0f}% — atenção, ainda dá pra continuar.")
+
+        mem_color = color_for(extras["mem_kb"], "memory_kb")
+        if mem_color == "red":
+            out.append(f"[red]🔴 {proj}[/] memória {extras['mem_kb']}KB ({extras['mem_files']} arquivos) — rode [cyan]memory-audit[/].")
+        elif mem_color == "yellow":
+            out.append(f"[yellow]🟡 {proj}[/] memória {extras['mem_kb']}KB — considere auditar.")
+
+        cmd_color = color_for(extras["claude_md"], "claude_md_bytes")
+        if cmd_color == "red":
+            out.append(f"[red]🔴 {proj}[/] CLAUDE.md {extras['claude_md']//1024}KB — muito grande, pode pesar contexto.")
+
+        agt_color = color_for(extras["agents"], "agents_per_session")
+        if agt_color == "red":
+            out.append(f"[red]🔴 {proj}[/] {extras['agents']} agentes lançados — sessão pesada, considere dividir.")
+
+    if not out:
+        out.append("[green]✓ tudo verde — nenhum threshold atingido.[/]")
+    return out
+
+
 def build_session_prompt(focus: dict, sessions: list[dict], quota: dict) -> str:
     """System prompt quando o chat está focado numa sessão específica."""
     base = build_system_prompt(sessions, quota)
@@ -560,21 +607,43 @@ class ChatPane(Vertical):
             log.write("  [cyan]r[/]            refresh manual do painel")
             log.write("  [cyan]q[/]            sair")
             log.write("")
-            log.write("[bold]chat[/]")
-            log.write("  [cyan]/help[/]   esta ajuda")
-            log.write("  [cyan]/clear[/]  volta ao modo geral (limpa foco e histórico)")
-            log.write("  [cyan]/log[/]    mostra últimas linhas do log de chat")
-            log.write("  [cyan]/where[/]  mostra path do log e do config")
+            log.write("[bold]chat — comandos[/]")
+            log.write("  [cyan]/help[/]    esta ajuda")
+            log.write("  [cyan]/diag[/]    diagnóstico do painel (cota + sessões em alerta)")
+            log.write("  [cyan]/skills[/]  3 skills úteis pra rodar nas sessões focadas")
+            log.write("  [cyan]/clear[/]   volta ao modo geral (limpa foco e histórico)")
+            log.write("  [cyan]/log[/]     mostra últimas linhas do log de chat")
+            log.write("  [cyan]/where[/]   mostra path do log e do config")
+            log.write("  [dim]/fork[/]    [dim]V2 — abrir nova sessão Claude Code continuando a focada (não disponível)[/]")
             log.write("")
             log.write("[bold]modos do chat[/]")
             log.write("  [yellow]geral[/]   responde sobre todas sessões (estado do painel)")
-            log.write("  [yellow]focado[/]  responde sobre UMA sessão (transcript carregado)")
-            log.write("            é read-only — não injeta nada na sessão original")
-            log.write("")
-            log.write("[bold]roadmap[/]")
-            log.write("  [dim]/fork[/]   V2 — abrir nova sessão Claude Code continuando a focada (não disponível)")
+            log.write("  [yellow]focado[/]  responde sobre UMA sessão (transcript carregado, read-only)")
             log.write("")
             log.write("[bold]docs[/]  [dim]https://github.com/inematds/iccmonit[/]")
+        elif cmd == "/diag":
+            log.write("[bold magenta]── diagnóstico do painel ──[/]")
+            for line in diagnose_panel(self._sessions, self._quota):
+                log.write(f"  {line}")
+        elif cmd == "/skills":
+            log.write("[bold magenta]── skills úteis (skillmanager3x) ──[/]")
+            log.write("")
+            log.write("[bold cyan]session-statusline[/]  → checkpoint operacional rápido")
+            log.write("  [dim]Quando: durante o trabalho, pra ver onde está, decidir se continua,")
+            log.write("  compacta ou faz handoff. Triggers: 'onde estamos', 'checkpoint',")
+            log.write("  'organiza a sessão', 'próximos passos'.[/]")
+            log.write("")
+            log.write("[bold cyan]memory-audit[/]         → auditoria de memória/CLAUDE.md")
+            log.write("  [dim]Quando: o painel mostra memória 🟡/🔴 ou CLAUDE.md grande.")
+            log.write("  Triggers: 'analise a memória', 'memória inchada', 'o que remover',")
+            log.write("  'limpa memória'.[/]")
+            log.write("")
+            log.write("[bold cyan]session-handoff[/]      → resumo final antes de /clear")
+            log.write("  [dim]Quando: ctx 🔴 ou vai encerrar a sessão. Gera resumo pra um")
+            log.write("  agente fresco continuar. Triggers: 'vou dar /clear', 'handoff',")
+            log.write("  'encerrar sessão'.[/]")
+            log.write("")
+            log.write("[dim]Como rodar: na sessão Claude Code alvo, digite o trigger ou /<skill-name>.[/]")
         elif cmd == "/log":
             log.write(f"[bold]── últimas 20 entradas de {CHAT_LOG.name} ──[/]")
             for ln in tail_chat_log(20):
