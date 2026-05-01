@@ -18,7 +18,7 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.02.00"  # v1.xx.yy → xx=recurso, yy=bug (sequencial até mudar a major)
+VERSION = "v1.02.01"  # v1.xx.yy → xx=recurso, yy=bug (sequencial até mudar a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -94,16 +94,44 @@ def load_sessions() -> list[dict]:
     return sorted(sessions, key=lambda s: s.get("updatedAt", 0), reverse=True)
 
 
-def get_transcript_usage(session: dict) -> tuple[str, int, float]:
-    """Returns (model, total_tokens, ctx_pct)"""
+def find_active_transcript(session: dict) -> Optional[Path]:
+    """Acha o transcript em uso AGORA pelo PID da sessão.
+
+    O ~/.claude/sessions/<pid>.json congela o sessionId no momento em que
+    o Claude Code arrancou — após /clear, novo JSONL é criado mas o
+    session.json não muda. Estratégia: pegar o JSONL mais recente (mtime)
+    no diretório do projeto. Se o apontado pelo session.json for o mais
+    novo, usa ele; senão, usa o mais novo.
+    """
     cwd = session.get("cwd", "")
     session_id = session.get("sessionId", "")
     encoded = encode_cwd(cwd)
-    transcript = PROJECTS_DIR / encoded / f"{session_id}.jsonl"
-    if not transcript.exists():
-        # try with leading dash
-        transcript = PROJECTS_DIR / f"-{encoded}" / f"{session_id}.jsonl"
-    if not transcript.exists():
+    project_dir = None
+    for prefix in ["", "-"]:
+        p = PROJECTS_DIR / f"{prefix}{encoded}"
+        if p.exists():
+            project_dir = p
+            break
+    if not project_dir:
+        return None
+    hinted = project_dir / f"{session_id}.jsonl"
+    candidates = sorted(
+        project_dir.glob("*.jsonl"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        return None
+    newest = candidates[0]
+    if hinted.exists() and hinted.stat().st_mtime >= newest.stat().st_mtime:
+        return hinted
+    return newest
+
+
+def get_transcript_usage(session: dict) -> tuple[str, int, float]:
+    """Returns (model, total_tokens, ctx_pct)"""
+    transcript = find_active_transcript(session)
+    if not transcript:
         return "unknown", 0, 0.0
     try:
         result = subprocess.run(
@@ -137,13 +165,8 @@ def get_transcript_usage(session: dict) -> tuple[str, int, float]:
 
 def get_session_cost(session: dict) -> float:
     """Sum cost from all assistant messages in transcript."""
-    cwd = session.get("cwd", "")
-    session_id = session.get("sessionId", "")
-    encoded = encode_cwd(cwd)
-    transcript = PROJECTS_DIR / encoded / f"{session_id}.jsonl"
-    if not transcript.exists():
-        transcript = PROJECTS_DIR / f"-{encoded}" / f"{session_id}.jsonl"
-    if not transcript.exists():
+    transcript = find_active_transcript(session)
+    if not transcript:
         return 0.0
     total_cost = 0.0
     try:
@@ -204,32 +227,30 @@ def get_session_extras(session: dict) -> dict:
             result["mem_kb"] = sum(f.stat().st_size for f in files) // 1024
             break
 
-    # count Agent tool uses and skills invoked in transcript
-    for prefix in ["", "-"]:
-        transcript = PROJECTS_DIR / f"{prefix}{encoded}" / f"{session_id}.jsonl"
-        if transcript.exists():
-            skills_seen = set()
-            try:
-                with open(transcript) as f:
-                    for line in f:
-                        try:
-                            obj = json.loads(line)
-                            if obj.get("type") == "assistant":
-                                for block in obj.get("message", {}).get("content", []):
-                                    if not isinstance(block, dict):
-                                        continue
-                                    if block.get("type") == "tool_use":
-                                        if block.get("name") == "Agent":
-                                            result["agents"] += 1
-                                        elif block.get("name") == "Skill":
-                                            inp = block.get("input", {})
-                                            skills_seen.add(inp.get("skill", "?"))
-                        except Exception:
-                            continue
-                result["skills"] = len(skills_seen)
-            except Exception:
-                pass
-            break
+    # count Agent tool uses and skills invoked in transcript ATIVO (pós /clear inclusive)
+    transcript = find_active_transcript(session)
+    if transcript:
+        skills_seen = set()
+        try:
+            with open(transcript) as f:
+                for line in f:
+                    try:
+                        obj = json.loads(line)
+                        if obj.get("type") == "assistant":
+                            for block in obj.get("message", {}).get("content", []):
+                                if not isinstance(block, dict):
+                                    continue
+                                if block.get("type") == "tool_use":
+                                    if block.get("name") == "Agent":
+                                        result["agents"] += 1
+                                    elif block.get("name") == "Skill":
+                                        inp = block.get("input", {})
+                                        skills_seen.add(inp.get("skill", "?"))
+                    except Exception:
+                        continue
+            result["skills"] = len(skills_seen)
+        except Exception:
+            pass
 
     return result
 
@@ -337,16 +358,8 @@ class SessionTable(Static):
 
 
 def load_session_messages(session: dict, max_chars: int = 25000) -> str:
-    """Extrai turns user/assistant recentes do transcript da sessão."""
-    cwd = session.get("cwd", "")
-    session_id = session.get("sessionId", "")
-    encoded = encode_cwd(cwd)
-    transcript = None
-    for prefix in ["", "-"]:
-        p = PROJECTS_DIR / f"{prefix}{encoded}" / f"{session_id}.jsonl"
-        if p.exists():
-            transcript = p
-            break
+    """Extrai turns user/assistant recentes do transcript ATIVO da sessão."""
+    transcript = find_active_transcript(session)
     if not transcript:
         return "(transcript não encontrado)"
 

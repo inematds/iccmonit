@@ -9,7 +9,7 @@ Pensado para rodar em um **terminal separado** ao lado das suas sessões Claude 
 - Tamanho do `CLAUDE.md`, da memória do projeto, agentes lançados e skills invocadas
 - Chat com Claude (Haiku por padrão) ciente do estado do painel
 
-Versão atual: **v1.02.00**
+Versão atual: **v1.02.01**
 
 ![iccmonit em execução — painel de cota, sessões e chat focado](docs/img/screenshot.jpg)
 
@@ -186,7 +186,7 @@ Modelo padrão: `claude-haiku-4-5-20251001` (configurável em `config.json` → 
 | Métrica | Fonte |
 |---|---|
 | Sessões ativas | `~/.claude/sessions/*.json` — um arquivo por PID, filtrado por processo vivo (`os.kill(pid, 0)`) |
-| Modelo, contexto %, custo | Última mensagem `assistant` com `usage` no transcript JSONL: `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl` |
+| Modelo, contexto %, custo | Última mensagem `assistant` com `usage` no transcript JSONL **ativo** em `~/.claude/projects/<encoded-cwd>/`. O `sessionId` em `session.json` congela no boot — após `/clear` o Claude Code cria um JSONL novo e o monitor segue o de `mtime` mais recente |
 | Cota 5h / 7d / 7d-Sonnet | `/tmp/cc_limits_<uid>.json` — cache do statusline (fonte oficial via API Anthropic) |
 | `CLAUDE.md` | `stat` do arquivo em `<cwd>/CLAUDE.md` |
 | Memória | Conta arquivos e soma bytes de `~/.claude/projects/<encoded-cwd>/memory/` |
@@ -337,6 +337,7 @@ A versão é exibida no título da janela TUI (header).
 | Modo web não abre | Porta ocupada | Tente outra porta: `./start.sh web 9001` |
 | Modo web abre o "demo" do Textual | Versão antiga sem `textual-serve` | Atualize: `git pull` (a partir de v1.01.01 usa `textual-serve` separado) |
 | Modo web mostra só o logo "iccmonit" e não carrega a TUI | Versão `v1.01.01` bindando em `0.0.0.0` (websocket inválido no navegador) | Atualize pra `v1.01.02`+ — bind virou `127.0.0.1` |
+| Após `/clear` o `Ctx%` continua alto | Versão ≤ `v1.02.00` lia o JSONL antigo (sessionId congelado em `session.json`) | Atualize pra `v1.02.01`+ — passa a seguir o JSONL mais recente (`mtime`) |
 | Erro `ImportError: textual` | Dependências não instaladas | Rode `pip install textual anthropic --break-system-packages` ou simplesmente `./start.sh` (instala automaticamente) |
 
 ---

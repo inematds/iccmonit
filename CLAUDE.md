@@ -45,7 +45,7 @@ iccmonit/
 | Dado | Fonte | Notas |
 |---|---|---|
 | Sessões ativas | `~/.claude/sessions/*.json` | Um arquivo por PID ativo |
-| Contexto %, modelo, custo | transcript JSONL — última msg `assistant` com campo `usage` | Path: `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl` |
+| Contexto %, modelo, custo | transcript JSONL — última msg `assistant` com campo `usage` | Path: JSONL **mais recente por `mtime`** em `~/.claude/projects/<encoded-cwd>/` (o `sessionId` em `session.json` não acompanha `/clear`) |
 | Cota 5h / 7d / 7d-Sonnet | `/tmp/cc_limits_<uid>.json` | Cache 60s populado pelo statusline — fonte oficial (API Anthropic) |
 | CLAUDE.md | `<cwd>/CLAUDE.md` | stat do arquivo |
 | Memória | `~/.claude/projects/<encoded-cwd>/memory/` | Conta arquivos e soma bytes |
