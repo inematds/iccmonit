@@ -19,7 +19,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.11.03"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.11.04"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -638,8 +638,22 @@ class SectionLabel(Label):
         self.post_message(self.Clicked(self.section))
 
 
+class CloseButton(Static):
+    """[ X ] clicável que fecha o modal pai."""
+
+    def __init__(self, **kwargs):
+        super().__init__("[ X ]", **kwargs)
+        self.tooltip = "fechar (Esc)"
+
+    def on_click(self, event) -> None:
+        # sobe a árvore até achar o ModalScreen e fecha ele
+        screen = self.screen
+        if isinstance(screen, ModalScreen):
+            screen.dismiss()
+
+
 class PanelModal(ModalScreen):
-    """Mostra uma seção em tela cheia. Esc/q fecha."""
+    """Mostra uma seção em tela cheia. Esc/q/click no [ X ] fecha."""
 
     DEFAULT_CSS = """
     PanelModal {
@@ -652,11 +666,28 @@ class PanelModal(ModalScreen):
         padding: 1 2;
         background: $surface;
     }
+    #modal-header {
+        height: 1;
+        margin-bottom: 1;
+    }
     #modal-title {
         text-style: bold;
         color: $accent;
-        margin-bottom: 1;
+        width: 1fr;
         height: 1;
+    }
+    #modal-close {
+        width: auto;
+        min-width: 7;
+        height: 1;
+        background: $error;
+        color: white;
+        text-style: bold;
+        padding: 0 1;
+        content-align: center middle;
+    }
+    #modal-close:hover {
+        background: $error 60%;
     }
     #modal-frame DataTable {
         height: 1fr;
@@ -686,7 +717,9 @@ class PanelModal(ModalScreen):
     def compose(self) -> ComposeResult:
         title = self.TITLES.get(self.kind, "?")
         with Vertical(id="modal-frame"):
-            yield Label(f"● {title} — fullscreen  [dim](Esc / q = fechar)[/]", id="modal-title")
+            with Horizontal(id="modal-header"):
+                yield Label(f"● {title} — fullscreen  [dim](Esc / q = fechar)[/]", id="modal-title")
+                yield CloseButton(id="modal-close")
             if self.kind == "quota":
                 yield QuotaBar(id="modal-quota")
             elif self.kind == "system":
