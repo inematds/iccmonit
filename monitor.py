@@ -18,7 +18,7 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.02.01"  # v1.xx.yy → xx=recurso, yy=bug (sequencial até mudar a major)
+VERSION = "v1.03.00"  # v1.xx.yy → xx=recurso, yy=bug (sequencial até mudar a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -26,6 +26,7 @@ PROJECTS_DIR = CLAUDE_DIR / "projects"
 LIMITS_CACHE = Path(f"/tmp/cc_limits_{os.getuid()}.json")
 CONTEXT_WINDOW = 1_000_000  # Opus/Sonnet 4.x
 CONFIG_FILE = Path(__file__).parent / "config.json"
+CHAT_LOG = Path(__file__).parent / "chat.log"
 
 
 def load_config() -> dict:
@@ -204,6 +205,47 @@ def get_oauth_token() -> Optional[str]:
         return data.get("claudeAiOauth", {}).get("accessToken")
     except Exception:
         return None
+
+
+def get_oauth_expiry() -> Optional[float]:
+    """Retorna segundos até expirar (None se desconhecido, negativo se expirado)."""
+    creds = CLAUDE_DIR / ".credentials.json"
+    try:
+        data = json.loads(creds.read_text())
+        exp_ms = data.get("claudeAiOauth", {}).get("expiresAt")
+        if exp_ms:
+            return (exp_ms / 1000) - time.time()
+    except Exception:
+        pass
+    return None
+
+
+def log_chat(role: str, text: str, *, focus: Optional[str] = None,
+             error_status: Optional[int] = None, error_body: Optional[str] = None) -> None:
+    """Append a chat event to the log file."""
+    try:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        focus_tag = f" [focus={focus[:8]}]" if focus else " [geral]"
+        with CHAT_LOG.open("a") as f:
+            if error_status is not None:
+                f.write(f"[{ts}]{focus_tag} ERROR {error_status} ({role}): {text[:300]}\n")
+                if error_body:
+                    f.write(f"  body: {str(error_body)[:1500]}\n")
+            else:
+                f.write(f"[{ts}]{focus_tag} {role}: {text}\n")
+    except Exception:
+        pass
+
+
+def tail_chat_log(n: int = 20) -> list[str]:
+    if not CHAT_LOG.exists():
+        return ["(log vazio — nenhuma conversa registrada ainda)"]
+    try:
+        with CHAT_LOG.open() as f:
+            lines = f.readlines()
+        return [ln.rstrip() for ln in lines[-n:]]
+    except Exception as e:
+        return [f"(erro lendo log: {e})"]
 
 
 def get_session_extras(session: dict) -> dict:
@@ -511,10 +553,40 @@ class ChatPane(Vertical):
         if cmd == "/clear":
             self.set_focus(None)
         elif cmd == "/help":
-            log.write("[bold]comandos:[/]")
-            log.write("  [cyan]/clear[/]  → volta ao modo geral (sem foco)")
-            log.write("  [cyan]/help[/]   → esta ajuda")
-            log.write("[dim]Para focar numa sessão: navegue na tabela com ↑/↓ e Enter.[/]")
+            log.write("[bold magenta]── ajuda — iccmonit " + VERSION + " ──[/]")
+            log.write("")
+            log.write("[bold]TUI[/]")
+            log.write("  [cyan]↑/↓ + Enter[/]  na tabela → foca o chat numa sessão")
+            log.write("  [cyan]r[/]            refresh manual do painel")
+            log.write("  [cyan]q[/]            sair")
+            log.write("")
+            log.write("[bold]chat[/]")
+            log.write("  [cyan]/help[/]   esta ajuda")
+            log.write("  [cyan]/clear[/]  volta ao modo geral (limpa foco e histórico)")
+            log.write("  [cyan]/log[/]    mostra últimas linhas do log de chat")
+            log.write("  [cyan]/where[/]  mostra path do log e do config")
+            log.write("")
+            log.write("[bold]modos do chat[/]")
+            log.write("  [yellow]geral[/]   responde sobre todas sessões (estado do painel)")
+            log.write("  [yellow]focado[/]  responde sobre UMA sessão (transcript carregado)")
+            log.write("            é read-only — não injeta nada na sessão original")
+            log.write("")
+            log.write("[bold]roadmap[/]")
+            log.write("  [dim]/fork[/]   V2 — abrir nova sessão Claude Code continuando a focada (não disponível)")
+            log.write("")
+            log.write("[bold]docs[/]  [dim]https://github.com/inematds/iccmonit[/]")
+        elif cmd == "/log":
+            log.write(f"[bold]── últimas 20 entradas de {CHAT_LOG.name} ──[/]")
+            for ln in tail_chat_log(20):
+                log.write(f"  [dim]{ln}[/]")
+        elif cmd == "/where":
+            log.write(f"[bold]chat log:[/]   {CHAT_LOG}")
+            log.write(f"[bold]config:[/]     {CONFIG_FILE}")
+            log.write(f"[bold]projects:[/]   {PROJECTS_DIR}")
+        elif cmd == "/fork":
+            log.write("[yellow]/fork[/] ainda não implementado — está no roadmap V2.")
+            log.write("[dim]A ideia: abrir 'claude --resume <sessionId>' num subprocess paralelo,[/]")
+            log.write("[dim]forkando a conversa selecionada num novo terminal.[/]")
         else:
             log.write(f"[red]comando desconhecido:[/] {cmd}  [dim](tente /help)[/]")
 
@@ -534,6 +606,7 @@ class ChatPane(Vertical):
             return
 
         log.write(f"[bold cyan]você:[/] {msg}")
+        log_chat("user", msg, focus=self._focus_session_id)
         self._history.append({"role": "user", "content": msg})
         try:
             focus = None
@@ -556,8 +629,28 @@ class ChatPane(Vertical):
             reply = response.content[0].text
             self._history.append({"role": "assistant", "content": reply})
             log.write(f"[bold green]claude:[/] {reply}")
+            log_chat("claude", reply, focus=self._focus_session_id)
         except Exception as e:
-            log.write(f"[red]erro:[/] {e}")
+            status = getattr(e, "status_code", None)
+            body = getattr(e, "body", None)
+            log_chat(
+                "user", msg, focus=self._focus_session_id,
+                error_status=status or 0, error_body=str(body) if body else str(e),
+            )
+            if status == 401:
+                exp = get_oauth_expiry()
+                exp_msg = ""
+                if exp is not None:
+                    exp_msg = f" (token expira em {exp/3600:.1f}h)" if exp > 0 else " (token EXPIRADO)"
+                log.write(f"[red]401 — OAuth não aceito{exp_msg}.[/]")
+                log.write("[dim]Logue de novo no Claude Code (claude logout/login) ou aguarde refresh automático.[/]")
+                log.write(f"[dim]Detalhes em {CHAT_LOG.name} (use /log).[/]")
+            else:
+                log.write(f"[red]erro {status or ''}:[/] {str(e)[:300]}")
+                log.write(f"[dim]Detalhes em {CHAT_LOG.name} (use /log).[/]")
+            # tira a user msg que falhou pra não envenenar o histórico
+            if self._history and self._history[-1].get("role") == "user":
+                self._history.pop()
 
 
 # ── App ───────────────────────────────────────────────────────────────────────

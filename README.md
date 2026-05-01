@@ -9,7 +9,7 @@ Pensado para rodar em um **terminal separado** ao lado das suas sessões Claude 
 - Tamanho do `CLAUDE.md`, da memória do projeto, agentes lançados e skills invocadas
 - Chat com Claude (Haiku por padrão) ciente do estado do painel
 
-Versão atual: **v1.02.01**
+Versão atual: **v1.03.00**
 
 ![iccmonit em execução — painel de cota, sessões e chat focado](docs/img/screenshot.jpg)
 
@@ -172,10 +172,22 @@ Chat embutido com Claude com **dois modos**:
 
 | Comando | Ação |
 |---------|------|
+| `/help`  | Ajuda completa (TUI + chat + roadmap) |
 | `/clear` | Volta ao modo geral (limpa o foco e o histórico) |
-| `/help`  | Lista de comandos |
+| `/log`   | Mostra as últimas 20 linhas do log de chat |
+| `/where` | Imprime os caminhos do log, config e diretório de projects |
+| `/fork`  | *(roadmap V2)* — abrir nova sessão Claude Code continuando a focada |
 
 Trocar de foco também limpa o histórico do chat — pra não misturar conversas.
+
+#### Log de chat
+
+Cada turno (você → claude) e cada erro são gravados em `chat.log` no diretório do projeto. Inclui:
+
+- timestamp, role (user/claude), foco (`[geral]` ou `[focus=<8 chars>]`), e texto
+- em caso de erro: status code e body cru da resposta da API
+
+Útil pra debugar 401 (OAuth expirado/inválido), rate limit, payload inválido, etc. O arquivo está no `.gitignore`.
 
 Modelo padrão: `claude-haiku-4-5-20251001` (configurável em `config.json` → `chat.model`). Autenticação via OAuth do Claude Code (token em `~/.claude/.credentials.json`).
 
@@ -332,6 +344,7 @@ A versão é exibida no título da janela TUI (header).
 |---------|----------------|---------------|
 | Cota mostra `aguardando API...` | `/tmp/cc_limits_<uid>.json` ausente ou > 2 min | Confirme que o statusline padrão do Claude Code está rodando — ele popula esse cache |
 | Chat indisponível | Token OAuth não encontrado | Faça login novamente no Claude Code e confirme que `~/.claude/.credentials.json` tem `claudeAiOauth.accessToken` |
+| Chat retorna `401` | Token OAuth expirado, revogado, ou cota da janela esgotada | Use `/log` no chat pra ver o body do erro. Se expirado, faça `claude logout` + `claude login`. Se cota, espere a janela renovar (vide painel de cota). |
 | Tabela vazia | Nenhuma sessão Claude Code ativa | Abra uma sessão `claude` em outro terminal e dê `r` para refresh |
 | `Ctx%` zerado | Transcript ainda sem mensagem `assistant` com `usage` | Use a sessão um pouco — depois da primeira resposta o valor aparece |
 | Modo web não abre | Porta ocupada | Tente outra porta: `./start.sh web 9001` |
