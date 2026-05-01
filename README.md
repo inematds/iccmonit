@@ -9,7 +9,7 @@ Pensado para rodar em um **terminal separado** ao lado das suas sessões Claude 
 - Tamanho do `CLAUDE.md`, da memória do projeto, agentes lançados e skills invocadas
 - Chat com Claude (Haiku por padrão) ciente do estado do painel
 
-Versão atual: **v1.07.03**
+Versão atual: **v1.08.03**
 
 ![iccmonit em execução — painel de cota, sessões e chat focado](docs/img/screenshot.jpg)
 
@@ -120,7 +120,10 @@ Auto-refresh a cada **10 segundos** por padrão (configurável em `config.json` 
 
 ## Painéis da TUI
 
-A TUI tem cinco seções verticais (a de Processos é opcional):
+A TUI tem layout em duas colunas:
+
+- **Esquerda (~⅔ da largura)** — empilha verticalmente: Cota → Máquina → Processos (opcional) → Sessões
+- **Direita (~⅓ da largura)** — Chat ocupando toda a altura
 
 ### 1. Cota (topo)
 

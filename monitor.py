@@ -18,7 +18,7 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.07.03"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.08.03"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -979,6 +979,17 @@ class MonitorApp(App):
     Screen {
         background: $surface;
     }
+    #main-row {
+        height: 1fr;
+    }
+    #left-column {
+        width: 2fr;
+        height: 1fr;
+    }
+    #right-column {
+        width: 1fr;
+        height: 1fr;
+    }
     #quota-section, #system-section {
         height: auto;
         border: solid $primary;
@@ -1000,7 +1011,7 @@ class MonitorApp(App):
         color: $accent;
     }
     #session-section {
-        height: 12;
+        height: 1fr;
         border: solid $primary;
         padding: 0 1;
         margin-bottom: 1;
@@ -1034,22 +1045,24 @@ class MonitorApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Vertical():
-            with Vertical(id="quota-section"):
-                yield Label("● Cota", id="quota-label")
-                yield QuotaBar(id="quota-bar")
-            with Vertical(id="system-section"):
-                yield Label("● Máquina", id="system-label")
-                yield SystemMonitor(id="system-monitor")
-            with Vertical(id="process-section"):
-                yield Label("● Processos", id="process-label")
-                yield ProcessTable(id="process-table-widget")
-            with Vertical(id="session-section"):
-                yield Label("● Sessões ativas", id="session-label")
-                yield SessionTable(id="session-table-widget")
-            with Vertical(id="chat-section"):
-                yield Label("● Chat", id="chat-label")
-                yield ChatPane(id="chat-pane")
+        with Horizontal(id="main-row"):
+            with Vertical(id="left-column"):
+                with Vertical(id="quota-section"):
+                    yield Label("● Cota", id="quota-label")
+                    yield QuotaBar(id="quota-bar")
+                with Vertical(id="system-section"):
+                    yield Label("● Máquina", id="system-label")
+                    yield SystemMonitor(id="system-monitor")
+                with Vertical(id="process-section"):
+                    yield Label("● Processos", id="process-label")
+                    yield ProcessTable(id="process-table-widget")
+                with Vertical(id="session-section"):
+                    yield Label("● Sessões ativas", id="session-label")
+                    yield SessionTable(id="session-table-widget")
+            with Vertical(id="right-column"):
+                with Vertical(id="chat-section"):
+                    yield Label("● Chat", id="chat-label")
+                    yield ChatPane(id="chat-pane")
         yield Footer()
 
     def on_mount(self) -> None:
