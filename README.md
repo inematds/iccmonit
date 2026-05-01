@@ -9,7 +9,7 @@ Pensado para rodar em um **terminal separado** ao lado das suas sessões Claude 
 - Tamanho do `CLAUDE.md`, da memória do projeto, agentes lançados e skills invocadas
 - Chat com Claude (Haiku por padrão) ciente do estado do painel
 
-Versão atual: **v1.01.02**
+Versão atual: **v1.02.00**
 
 ![iccmonit em execução — painel de cota, sessões e chat focado](docs/img/screenshot.jpg)
 
@@ -70,21 +70,33 @@ Abre a TUI no terminal atual. Ideal para rodar lado-a-lado com as sessões Claud
 ### Modo web
 
 ```bash
-./start.sh web              # http://localhost:8000  (porta padrão, abre o navegador)
-./start.sh web 9000         # http://localhost:9000  (porta custom)
+./start.sh web                       # 127.0.0.1:8000     — apenas local (padrão)
+./start.sh web 9000                  # 127.0.0.1:9000     — porta custom
+./start.sh web 8000 lan              # <ip-da-LAN>:8000   — outras máquinas da rede
+./start.sh web 8000 192.168.1.50     # IP específico
 ```
 
-Usa o pacote **`textual-serve`** para empacotar a TUI atual num WebSocket + xterm.js no navegador, sem mudança de código. O servidor (`serve.py`) faz bind em `127.0.0.1` (apenas local) e abre o navegador automaticamente. Pra acesso remoto, use SSH tunnel:
+Usa o pacote **`textual-serve`** para empacotar a TUI atual num WebSocket + xterm.js no navegador, sem mudança de código. O servidor (`serve.py`) abre o navegador automaticamente.
 
-```bash
-ssh -L 8000:localhost:8000 usuario@maquina
-``` Útil pra:
+**Modos de bind:**
+
+| Modo | Bind | Quem acessa |
+|------|------|-------------|
+| padrão | `127.0.0.1` | Só o próprio host |
+| `lan`  | IP da LAN auto-detectado (rota pro `8.8.8.8`) | Qualquer máquina na sub-rede |
+| `<ip>` | IP fornecido | Quem rotear até esse IP |
+
+> ⚠ **Sem autenticação.** No modo `lan`, qualquer um na rede com o IP+porta acessa o monitor — incluindo o chat OAuth conectado à sua conta. Use só em rede de confiança. Pra acesso através da internet, prefira **SSH tunnel** em vez de expor a porta:
+>
+> ```bash
+> ssh -L 8000:localhost:8000 usuario@maquina
+> ```
+>
+> Bindar em `0.0.0.0` está **bloqueado** porque o `textual-serve` embute o host de bind no websocket e o navegador rejeita conexão WS pra `0.0.0.0`. Útil pra:
 
 - Acompanhar de outra máquina na rede local (acesse `http://<ip-da-maquina>:8000`)
 - Manter o monitor visível num browser sem ocupar terminal
 - Compartilhar visão temporária com colegas na mesma rede
-
-> **Atenção**: o modo web **não tem autenticação** e por isso bind em `127.0.0.1` (apenas local). Pra acessar de outra máquina, use SSH tunnel — nunca abra a porta direto na rede.
 
 ### Ajuda
 

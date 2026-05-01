@@ -9,14 +9,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Como rodar
 
 ```bash
-./start.sh             # TUI no terminal
-./start.sh web         # serve no navegador (porta padrão 8000)
-./start.sh web 9000    # serve em porta custom
+./start.sh                       # TUI no terminal
+./start.sh web                   # 127.0.0.1:8000 (padrão)
+./start.sh web 8000 lan          # IP da LAN auto-detectado
+./start.sh web 8000 192.168.1.50 # IP específico
 ```
 
 Teclas: `r` = refresh manual, `q` = sair.
 
-Modo web usa o pacote `textual-serve` (via `serve.py`) — empacota a TUI atual num WebSocket+xterm.js, bind em `0.0.0.0`. Importante: **não use** `python3 -m textual serve` (abre o demo do Textual).
+Modo web usa o pacote `textual-serve` (via `serve.py`) — empacota a TUI atual num WebSocket+xterm.js. Notas importantes:
+
+- **Não use** `python3 -m textual serve` (abre o demo do Textual).
+- **Não bindar em `0.0.0.0`** — o textual-serve embute o host no websocket e o navegador rejeita WS pra `0.0.0.0`. Por isso o modo `lan` resolve o IP de antemão.
 
 ## Dependências
 

@@ -23,9 +23,11 @@ ensure_web_deps() {
 usage() {
     cat <<EOF
 Uso:
-  ./start.sh             roda a TUI no terminal atual
-  ./start.sh web [porta] serve a TUI no navegador (padrão: http://localhost:${DEFAULT_WEB_PORT})
-  ./start.sh -h          mostra esta ajuda
+  ./start.sh                       roda a TUI no terminal atual
+  ./start.sh web [porta]           serve no navegador local (127.0.0.1:${DEFAULT_WEB_PORT})
+  ./start.sh web [porta] lan       serve na LAN (detecta o IP automaticamente)
+  ./start.sh web [porta] <ip>      serve num IP específico (ex.: 192.168.1.50)
+  ./start.sh -h                    mostra esta ajuda
 EOF
 }
 
@@ -33,7 +35,12 @@ case "${1:-}" in
     web)
         ensure_web_deps
         PORT="${2:-$DEFAULT_WEB_PORT}"
-        exec python3 serve.py "$PORT"
+        HOST_MODE="${3:-}"
+        if [ -n "$HOST_MODE" ]; then
+            exec python3 serve.py "$PORT" "$HOST_MODE"
+        else
+            exec python3 serve.py "$PORT"
+        fi
         ;;
     -h|--help|help)
         usage
