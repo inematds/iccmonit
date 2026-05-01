@@ -18,7 +18,7 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.05.03"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.06.03"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -76,7 +76,9 @@ def fmt_tokens(n: int) -> str:
     return str(n)
 
 
-def load_sessions() -> list[dict]:
+def load_sessions(include_dead: bool = False) -> list[dict]:
+    """Lista sessões. Por padrão só as vivas; include_dead=True traz todas
+    do filesystem, marcando _alive=False nas que o PID já não existe."""
     sessions = []
     if not SESSIONS_DIR.exists():
         return sessions
@@ -84,15 +86,107 @@ def load_sessions() -> list[dict]:
         try:
             data = json.loads(f.read_text())
             pid = data.get("pid")
-            # check if process is still alive
             try:
                 os.kill(pid, 0)
+                data["_alive"] = True
             except (ProcessLookupError, PermissionError):
-                continue
+                data["_alive"] = False
+                if not include_dead:
+                    continue
             sessions.append(data)
         except Exception:
             continue
     return sorted(sessions, key=lambda s: s.get("updatedAt", 0), reverse=True)
+
+
+# ── system monitor (CPU/RAM/disco/GPU) ────────────────────────────────────────
+
+def get_cpu_info() -> dict:
+    try:
+        load1, load5, load15 = os.getloadavg()
+        cpu_count = os.cpu_count() or 1
+        return {
+            "cores": cpu_count,
+            "load_1m": round(load1, 2),
+            "load_5m": round(load5, 2),
+            "load_15m": round(load15, 2),
+            "usage_pct": round(min(load1 / cpu_count * 100, 100), 1),
+        }
+    except Exception:
+        return {"cores": os.cpu_count() or 1, "usage_pct": 0, "load_1m": 0, "load_5m": 0, "load_15m": 0}
+
+
+def get_memory_info() -> dict:
+    try:
+        with open("/proc/meminfo") as f:
+            info = {}
+            for line in f:
+                parts = line.split()
+                if parts[0] in ("MemTotal:", "MemAvailable:", "SwapTotal:", "SwapFree:"):
+                    info[parts[0].rstrip(":")] = int(parts[1]) // 1024  # KB → MB
+        total = info.get("MemTotal", 0)
+        avail = info.get("MemAvailable", 0)
+        used = total - avail
+        return {
+            "total_mb": total,
+            "available_mb": avail,
+            "used_mb": used,
+            "usage_pct": round((used / max(total, 1)) * 100, 1),
+            "swap_used_mb": info.get("SwapTotal", 0) - info.get("SwapFree", 0),
+            "swap_total_mb": info.get("SwapTotal", 0),
+        }
+    except Exception:
+        return {"total_mb": 0, "available_mb": 0, "used_mb": 0, "usage_pct": 0, "swap_used_mb": 0, "swap_total_mb": 0}
+
+
+def get_disk_info(path: str = "/") -> dict:
+    try:
+        import shutil
+        u = shutil.disk_usage(path)
+        return {
+            "total_gb": round(u.total / 1024**3, 1),
+            "used_gb": round(u.used / 1024**3, 1),
+            "free_gb": round(u.free / 1024**3, 1),
+            "usage_pct": round(u.used / u.total * 100, 1),
+        }
+    except Exception:
+        return {"total_gb": 0, "used_gb": 0, "free_gb": 0, "usage_pct": 0}
+
+
+def get_gpu_info() -> dict:
+    try:
+        r = subprocess.run(
+            ["nvidia-smi",
+             "--query-gpu=name,temperature.gpu,memory.used,memory.total,utilization.gpu",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            return {"available": False}
+        # 1ª GPU
+        parts = [p.strip() for p in r.stdout.strip().splitlines()[0].split(",")]
+        used = int(parts[2]) if parts[2] not in ("[N/A]", "") else 0
+        total = int(parts[3]) if parts[3] not in ("[N/A]", "") else 0
+        return {
+            "available": True,
+            "name": parts[0],
+            "temp_c": int(parts[1]) if parts[1] not in ("[N/A]", "") else None,
+            "mem_used_mb": used,
+            "mem_total_mb": total,
+            "mem_pct": round(used / max(total, 1) * 100, 1) if total else 0.0,
+            "util_pct": int(parts[4]) if parts[4] not in ("[N/A]", "") else 0,
+        }
+    except Exception:
+        return {"available": False}
+
+
+def get_system_status() -> dict:
+    return {
+        "cpu": get_cpu_info(),
+        "memory": get_memory_info(),
+        "disk": get_disk_info(),
+        "gpu": get_gpu_info(),
+    }
 
 
 def find_active_transcript(session: dict) -> Optional[Path]:
@@ -116,6 +210,9 @@ def find_active_transcript(session: dict) -> Optional[Path]:
     if not project_dir:
         return None
     hinted = project_dir / f"{session_id}.jsonl"
+    # sessão morta: confia só no sessionId congelado (último estado conhecido)
+    if not session.get("_alive", True):
+        return hinted if hinted.exists() else None
     candidates = sorted(
         project_dir.glob("*.jsonl"),
         key=lambda p: p.stat().st_mtime,
@@ -353,6 +450,46 @@ class QuotaBar(Static):
         self.update("\n".join(lines) if lines else "[dim]aguardando API...[/]")
 
 
+class SystemMonitor(Static):
+    """Painel de uso da máquina: CPU, RAM, disco, GPU."""
+
+    def render_bar(self, label: str, pct: float, suffix: str) -> str:
+        filled = int(max(0, min(pct, 100)) / 2)
+        color = color_for(pct, "system_pct")
+        bar = "█" * filled + "░" * (50 - filled)
+        return f"[bold]{label}[/] [{color}]{bar} {pct:>4.0f}%[/] {suffix}"
+
+    def update_status(self, status: dict) -> None:
+        cpu = status["cpu"]
+        mem = status["memory"]
+        disk = status["disk"]
+        gpu = status["gpu"]
+        lines = [
+            self.render_bar(
+                "CPU ", cpu["usage_pct"],
+                f"{cpu['cores']}c · load {cpu['load_1m']}/{cpu['load_5m']}/{cpu['load_15m']}",
+            ),
+            self.render_bar(
+                "RAM ", mem["usage_pct"],
+                f"{mem['used_mb']:,}/{mem['total_mb']:,} MB"
+                + (f" · swap {mem['swap_used_mb']:,}MB" if mem.get("swap_used_mb") else ""),
+            ),
+            self.render_bar(
+                "Disk", disk["usage_pct"],
+                f"{disk['used_gb']}/{disk['total_gb']} GB · livre {disk['free_gb']} GB",
+            ),
+        ]
+        if gpu.get("available"):
+            temp = f" · {gpu['temp_c']}°C" if gpu.get("temp_c") is not None else ""
+            lines.append(
+                self.render_bar(
+                    "GPU ", float(gpu["util_pct"]),
+                    f"{gpu['name'][:20]} · VRAM {gpu['mem_used_mb']:,}/{gpu['mem_total_mb']:,}MB ({gpu['mem_pct']:.0f}%){temp}",
+                )
+            )
+        self.update("\n".join(lines))
+
+
 class SessionTable(Static):
     SESSIONS: reactive[list] = reactive([])
 
@@ -378,15 +515,22 @@ class SessionTable(Static):
         for s in sessions:
             model, tokens, ctx_pct = get_transcript_usage(s)
             extras = get_session_extras(s)
-            status = s.get("status", "?")
-            status_str = "[green]idle[/]" if status == "idle" else "[yellow]busy[/]"
+            alive = s.get("_alive", True)
+            if not alive:
+                status_str = "[dim red]morta[/]"
+            else:
+                status = s.get("status", "?")
+                status_str = "[green]idle[/]" if status == "idle" else "[yellow]busy[/]"
             ctx_color = color_for(ctx_pct, "context_pct")
             mem_color = color_for(extras["mem_kb"], "memory_kb")
             cmd_color = color_for(extras["claude_md"], "claude_md_bytes")
             agt_color = color_for(extras["agents"], "agents_per_session")
             mem_str = f"{extras['mem_files']}f/{extras['mem_kb']}k" if extras["mem_files"] else "-"
+            project_label = short_project(s.get("cwd", ""))
+            if not alive:
+                project_label = f"[dim]{project_label}[/]"
             table.add_row(
-                short_project(s.get("cwd", "")),
+                project_label,
                 status_str,
                 short_model(model),
                 colored(f"{ctx_pct}%", ctx_color),
@@ -778,13 +922,13 @@ class MonitorApp(App):
     Screen {
         background: $surface;
     }
-    #quota-section {
+    #quota-section, #system-section {
         height: auto;
         border: solid $primary;
         padding: 0 1;
         margin-bottom: 1;
     }
-    #quota-label {
+    #quota-label, #system-label, #session-label, #chat-label {
         text-style: bold;
         color: $accent;
     }
@@ -794,18 +938,10 @@ class MonitorApp(App):
         padding: 0 1;
         margin-bottom: 1;
     }
-    #session-label {
-        text-style: bold;
-        color: $accent;
-    }
     #chat-section {
         border: solid $primary;
         padding: 0 1;
         height: 1fr;
-    }
-    #chat-label {
-        text-style: bold;
-        color: $accent;
     }
     #chat-log {
         height: 1fr;
@@ -818,7 +954,10 @@ class MonitorApp(App):
     BINDINGS = [
         Binding("q", "quit", "Sair"),
         Binding("r", "refresh", "Refresh"),
+        Binding("a", "toggle_all", "Todas/Ativas"),
     ]
+
+    show_all_sessions: reactive[bool] = reactive(False)
 
     TITLE = f"{CONFIG.get('title', 'INEMA Claude Monitor')} {VERSION}"
 
@@ -828,6 +967,9 @@ class MonitorApp(App):
             with Vertical(id="quota-section"):
                 yield Label("● Cota", id="quota-label")
                 yield QuotaBar(id="quota-bar")
+            with Vertical(id="system-section"):
+                yield Label("● Máquina", id="system-label")
+                yield SystemMonitor(id="system-monitor")
             with Vertical(id="session-section"):
                 yield Label("● Sessões ativas", id="session-label")
                 yield SessionTable(id="session-table-widget")
@@ -843,15 +985,29 @@ class MonitorApp(App):
     def refresh_data(self) -> None:
         quota = load_quota()
         self.query_one(QuotaBar).update_quota(quota)
+        self.query_one(SystemMonitor).update_status(get_system_status())
 
-        sessions = load_sessions()
+        sessions = load_sessions(include_dead=self.show_all_sessions)
         self.query_one(SessionTable).update_sessions(sessions)
         self.query_one(ChatPane).update_context(sessions, quota)
 
+        # atualiza label da seção
+        scope = "todas (vivas + mortas)" if self.show_all_sessions else "ativas"
+        self.query_one("#session-label", Label).update(f"● Sessões {scope}")
+
         now = datetime.now().strftime("%H:%M:%S")
-        self.sub_title = f"atualizado {now} · {len(sessions)} sessão(ões)"
+        alive_count = sum(1 for s in sessions if s.get("_alive", True))
+        if self.show_all_sessions:
+            extra = f"{len(sessions)} ({alive_count} vivas)"
+        else:
+            extra = f"{len(sessions)} viva(s)"
+        self.sub_title = f"atualizado {now} · {extra}"
 
     def action_refresh(self) -> None:
+        self.refresh_data()
+
+    def action_toggle_all(self) -> None:
+        self.show_all_sessions = not self.show_all_sessions
         self.refresh_data()
 
     def on_session_table_session_selected(self, event: SessionTable.SessionSelected) -> None:

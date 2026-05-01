@@ -9,7 +9,7 @@ Pensado para rodar em um **terminal separado** ao lado das suas sessões Claude 
 - Tamanho do `CLAUDE.md`, da memória do projeto, agentes lançados e skills invocadas
 - Chat com Claude (Haiku por padrão) ciente do estado do painel
 
-Versão atual: **v1.04.03**
+Versão atual: **v1.06.03**
 
 ![iccmonit em execução — painel de cota, sessões e chat focado](docs/img/screenshot.jpg)
 
@@ -109,6 +109,7 @@ Usa o pacote **`textual-serve`** para empacotar a TUI atual num WebSocket + xter
 | Tecla | Ação |
 |-------|------|
 | `r`   | Refresh manual |
+| `a`   | Alterna entre **Sessões ativas** ↔ **todas** (vivas + mortas) |
 | `q`   | Sair |
 
 Auto-refresh a cada **10 segundos** por padrão (configurável em `config.json` via `refresh_interval_seconds`).
@@ -117,7 +118,7 @@ Auto-refresh a cada **10 segundos** por padrão (configurável em `config.json` 
 
 ## Painéis da TUI
 
-A TUI tem três seções verticais:
+A TUI tem quatro seções verticais:
 
 ### 1. Cota (topo)
 
@@ -131,9 +132,22 @@ Barra horizontal por janela:
 
 Cor da barra segue os thresholds de `quota_pct` em `config.json`. Se a barra aparecer "aguardando API..." é porque o cache `/tmp/cc_limits_<uid>.json` está vazio ou velho (> 2 min).
 
-### 2. Sessões ativas (meio)
+### 2. Máquina
 
-Tabela com uma linha por sessão Claude Code viva (PID alive). Colunas:
+Uso de hardware do servidor — barras coloridas pelos thresholds de `system_pct`:
+
+| Linha | Mostra |
+|-------|--------|
+| `CPU`  | `usage_pct` (load1 / cores) + load 1m/5m/15m + nº de cores |
+| `RAM`  | `used / total MB` + swap usado |
+| `Disk` | `used / total GB` + livre |
+| `GPU`  | `nvidia-smi`: utilização %, VRAM, temperatura. Linha some se não houver GPU NVIDIA. |
+
+CPU usa `os.getloadavg()` (não `psutil`), RAM lê `/proc/meminfo`, GPU é opcional via `nvidia-smi`. Sem dependências extras.
+
+### 3. Sessões (ativas ou todas)
+
+Tabela com uma linha por sessão Claude Code. Por padrão mostra só sessões com PID alive; pressione **`a`** para incluir as mortas (sessões cujo arquivo em `~/.claude/sessions/*.json` ainda existe mas o processo terminou). Mortas aparecem em cinza com status `morta`. Colunas:
 
 | Coluna | Descrição |
 |--------|-----------|
@@ -149,7 +163,7 @@ Tabela com uma linha por sessão Claude Code viva (PID alive). Colunas:
 
 Cada métrica recebe cor azul/verde/amarelo/vermelho conforme thresholds em `config.json`.
 
-### 3. Chat (rodapé)
+### 4. Chat (rodapé)
 
 Chat embutido com Claude com **dois modos**:
 

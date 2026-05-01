@@ -51,6 +51,13 @@
       "yellow": 8.0,
       "red":    20.0,
       "notes": "Custo acumulado por sessão em USD. >$20 = sessão cara, verificar eficiência"
+    },
+    "system_pct": {
+      "blue":   20,
+      "green":  60,
+      "yellow": 85,
+      "red":    95,
+      "notes": "% de uso de CPU/RAM/disco/GPU no painel Máquina"
     }
   },
 
