@@ -80,8 +80,8 @@ Constante `VERSION` em `monitor.py` segue o padrão **`v1.xx.yy`**:
 - **major (`1`)** — só muda quando vira V2 (mudança de plano).
 - **`xx`** — incrementa a cada **recurso novo** (feature). Sequencial: `01`, `02`, `03`...
 - **`yy`** — incrementa a cada **bug fix**. Sequencial: `01`, `02`, `03`...
-- Ao subir `xx`, `yy` reinicia em `00`.
-- Ao subir a major, `xx` e `yy` reiniciam em `00`.
+- **`yy` NÃO reinicia ao subir `xx`** — segue contando dentro da major.
+- Apenas o bump de major zera `xx` e `yy`.
 
 Sempre que adicionar feature ou corrigir bug, atualizar `VERSION` em `monitor.py:18` antes de finalizar.
 

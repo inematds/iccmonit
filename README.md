@@ -9,7 +9,7 @@ Pensado para rodar em um **terminal separado** ao lado das suas sessões Claude 
 - Tamanho do `CLAUDE.md`, da memória do projeto, agentes lançados e skills invocadas
 - Chat com Claude (Haiku por padrão) ciente do estado do painel
 
-Versão atual: **v1.04.00**
+Versão atual: **v1.04.03**
 
 ![iccmonit em execução — painel de cota, sessões e chat focado](docs/img/screenshot.jpg)
 
@@ -340,13 +340,16 @@ Constante `VERSION` em `monitor.py` no formato **`v1.xx.yy`**:
 
 - **major (`1`)** — só muda na transição para V2
 - **`xx`** — incrementa a cada **recurso novo** (sequencial: `01`, `02`, ...)
-- **`yy`** — incrementa a cada **bug fix** (sequencial; reinicia em `00` quando `xx` sobe)
+- **`yy`** — incrementa a cada **bug fix** (sequencial dentro da major)
+- **`yy` NÃO reinicia** quando `xx` sobe — só zera junto com `xx` na transição de major
 
 Exemplos:
 - `v1.00.00` → estado inicial
-- `v1.01.00` → primeiro recurso novo após inicial
-- `v1.01.03` → terceiro bug fix dentro do recurso `01`
-- `v1.02.00` → novo recurso (zera bugs)
+- `v1.01.00` → primeiro recurso novo (nenhum bug fix ainda)
+- `v1.01.02` → após dois bugs fixados dentro do recurso `01`
+- `v1.02.02` → próximo recurso (`yy` mantém em `02` porque nenhum novo bug foi corrigido)
+- `v1.02.03` → bug fix sobre `v1.02.02`
+- `v2.00.00` → mudança de major zera tudo
 
 A versão é exibida no título da janela TUI (header).
 
