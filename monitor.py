@@ -18,7 +18,7 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.04.03"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.05.03"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -448,6 +448,43 @@ def load_session_messages(session: dict, max_chars: int = 25000) -> str:
     return "\n\n".join(out) if out else "(sessão sem mensagens textuais)"
 
 
+def recommend_skills(sessions: list[dict]) -> dict[str, list[str]]:
+    """Pra cada skill, retorna lista de sessões em que deveria rodar agora.
+
+    Regras:
+    - session-handoff   → ctx amarelo/vermelho (risco de auto-compaction)
+    - memory-audit      → memória amarela/vermelha OU CLAUDE.md vermelho
+    - session-statusline → recomendação geral (sem sessão específica)
+    """
+    rec: dict[str, list[str]] = {
+        "session-handoff": [],
+        "memory-audit": [],
+        "session-statusline": [],
+    }
+    for s in sessions:
+        proj = short_project(s.get("cwd", ""))
+        _, _, ctx_pct = get_transcript_usage(s)
+        extras = get_session_extras(s)
+        ctx_color = color_for(ctx_pct, "context_pct")
+        mem_color = color_for(extras["mem_kb"], "memory_kb")
+        cmd_color = color_for(extras["claude_md"], "claude_md_bytes")
+
+        if ctx_color in ("yellow", "red"):
+            tag = "🔴" if ctx_color == "red" else "🟡"
+            rec["session-handoff"].append(f"{tag} {proj} (ctx {ctx_pct:.0f}%)")
+
+        if mem_color in ("yellow", "red") or cmd_color == "red":
+            worst = "red" if (mem_color == "red" or cmd_color == "red") else "yellow"
+            tag = "🔴" if worst == "red" else "🟡"
+            details = []
+            if mem_color in ("yellow", "red"):
+                details.append(f"mem {extras['mem_kb']}KB")
+            if cmd_color == "red":
+                details.append(f"CLAUDE.md {extras['claude_md']//1024}KB")
+            rec["memory-audit"].append(f"{tag} {proj} ({', '.join(details)})")
+    return rec
+
+
 def diagnose_panel(sessions: list[dict], quota: dict) -> list[str]:
     """Roda regras simples sobre painel + cota e devolve achados (yellow/red)."""
     out: list[str] = []
@@ -610,7 +647,8 @@ class ChatPane(Vertical):
             log.write("[bold]chat — comandos[/]")
             log.write("  [cyan]/help[/]    esta ajuda")
             log.write("  [cyan]/diag[/]    diagnóstico do painel (cota + sessões em alerta)")
-            log.write("  [cyan]/skills[/]  3 skills úteis pra rodar nas sessões focadas")
+            log.write("  [cyan]/skills[/]  recomenda qual sessão deve rodar qual skill")
+            log.write("            [dim](session-statusline · memory-audit · session-handoff)[/]")
             log.write("  [cyan]/clear[/]   volta ao modo geral (limpa foco e histórico)")
             log.write("  [cyan]/log[/]     mostra últimas linhas do log de chat")
             log.write("  [cyan]/where[/]   mostra path do log e do config")
@@ -625,25 +663,36 @@ class ChatPane(Vertical):
             log.write("[bold magenta]── diagnóstico do painel ──[/]")
             for line in diagnose_panel(self._sessions, self._quota):
                 log.write(f"  {line}")
-        elif cmd == "/skills":
-            log.write("[bold magenta]── skills úteis (skillmanager3x) ──[/]")
+        elif cmd in ("/skills", "/skill"):
+            rec = recommend_skills(self._sessions)
+            log.write("[bold magenta]── skills úteis (skillmanager3x) — análise do painel ──[/]")
             log.write("")
-            log.write("[bold cyan]session-statusline[/]  → checkpoint operacional rápido")
-            log.write("  [dim]Quando: durante o trabalho, pra ver onde está, decidir se continua,")
-            log.write("  compacta ou faz handoff. Triggers: 'onde estamos', 'checkpoint',")
-            log.write("  'organiza a sessão', 'próximos passos'.[/]")
+
+            log.write("[bold cyan]session-statusline[/] → checkpoint operacional rápido")
+            log.write("  [dim]Triggers: 'onde estamos', 'checkpoint', 'organiza a sessão'[/]")
+            log.write("  [dim green]→ rode em qualquer sessão ativa pra snapshot do que está em andamento[/]")
             log.write("")
-            log.write("[bold cyan]memory-audit[/]         → auditoria de memória/CLAUDE.md")
-            log.write("  [dim]Quando: o painel mostra memória 🟡/🔴 ou CLAUDE.md grande.")
-            log.write("  Triggers: 'analise a memória', 'memória inchada', 'o que remover',")
-            log.write("  'limpa memória'.[/]")
+
+            log.write("[bold cyan]memory-audit[/] → auditoria de memória/CLAUDE.md")
+            log.write("  [dim]Triggers: 'analise a memória', 'memória inchada', 'o que remover'[/]")
+            if rec["memory-audit"]:
+                log.write("  [bold yellow]→ recomendado em:[/]")
+                for r in rec["memory-audit"]:
+                    log.write(f"    {r}")
+            else:
+                log.write("  [dim green]→ nenhuma sessão precisa agora[/]")
             log.write("")
-            log.write("[bold cyan]session-handoff[/]      → resumo final antes de /clear")
-            log.write("  [dim]Quando: ctx 🔴 ou vai encerrar a sessão. Gera resumo pra um")
-            log.write("  agente fresco continuar. Triggers: 'vou dar /clear', 'handoff',")
-            log.write("  'encerrar sessão'.[/]")
+
+            log.write("[bold cyan]session-handoff[/] → resumo final antes de /clear")
+            log.write("  [dim]Triggers: 'vou dar /clear', 'handoff', 'encerrar sessão'[/]")
+            if rec["session-handoff"]:
+                log.write("  [bold yellow]→ recomendado em:[/]")
+                for r in rec["session-handoff"]:
+                    log.write(f"    {r}")
+            else:
+                log.write("  [dim green]→ nenhuma sessão precisa agora[/]")
             log.write("")
-            log.write("[dim]Como rodar: na sessão Claude Code alvo, digite o trigger ou /<skill-name>.[/]")
+            log.write("[dim]Pra rodar: foque a sessão alvo no monitor, abra o terminal dela e digite o trigger ou /<skill-name>.[/]")
         elif cmd == "/log":
             log.write(f"[bold]── últimas 20 entradas de {CHAT_LOG.name} ──[/]")
             for ln in tail_chat_log(20):
