@@ -16,9 +16,10 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, ScrollableContainer
 from textual.message import Message
 from textual.reactive import reactive
+from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.09.03"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.10.03"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -521,6 +522,97 @@ class SystemMonitor(Static):
         self.update("\n".join(lines))
 
 
+class SectionLabel(Label):
+    """Label do título de uma seção. Click abre o modal fullscreen daquela seção."""
+
+    class Clicked(Message):
+        def __init__(self, section: str) -> None:
+            super().__init__()
+            self.section = section
+
+    def __init__(self, text: str, section: str, **kwargs):
+        super().__init__(text, **kwargs)
+        self.section = section
+        # mostra que é clicável
+        self.tooltip = "click ou tecla numérica → fullscreen"
+
+    def on_click(self, event) -> None:
+        self.post_message(self.Clicked(self.section))
+
+
+class PanelModal(ModalScreen):
+    """Mostra uma seção em tela cheia. Esc/q fecha."""
+
+    DEFAULT_CSS = """
+    PanelModal {
+        align: center middle;
+    }
+    #modal-frame {
+        width: 95%;
+        height: 95%;
+        border: heavy $accent;
+        padding: 1 2;
+        background: $surface;
+    }
+    #modal-title {
+        text-style: bold;
+        color: $accent;
+        margin-bottom: 1;
+        height: 1;
+    }
+    #modal-frame DataTable {
+        height: 1fr;
+    }
+    #modal-frame QuotaBar, #modal-frame SystemMonitor {
+        height: auto;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "dismiss", "Fechar"),
+        Binding("q", "dismiss", "Fechar"),
+    ]
+
+    TITLES = {
+        "quota": "Cota",
+        "system": "Máquina",
+        "processes": "Processos",
+        "sessions": "Sessões",
+    }
+
+    def __init__(self, kind: str) -> None:
+        super().__init__()
+        self.kind = kind
+
+    def compose(self) -> ComposeResult:
+        title = self.TITLES.get(self.kind, "?")
+        with Vertical(id="modal-frame"):
+            yield Label(f"● {title} — fullscreen  [dim](Esc / q = fechar)[/]", id="modal-title")
+            if self.kind == "quota":
+                yield QuotaBar(id="modal-quota")
+            elif self.kind == "system":
+                yield SystemMonitor(id="modal-system")
+            elif self.kind == "processes":
+                yield ProcessTable(id="modal-procs")
+            elif self.kind == "sessions":
+                yield SessionTable(id="modal-sess")
+
+    def on_mount(self) -> None:
+        app = self.app
+        if self.kind == "quota":
+            self.query_one(QuotaBar).update_quota(getattr(app, "_last_quota", {}))
+        elif self.kind == "system":
+            self.query_one(SystemMonitor).update_status(get_system_status())
+        elif self.kind == "processes":
+            n = CONFIG.get("top_processes_n", 10) * 3  # mais linhas em fullscreen
+            sort_by = getattr(app, "proc_sort", "cpu")
+            procs = get_top_processes(n=n, sort_by=sort_by)
+            self.query_one(ProcessTable).update_processes(procs)
+        elif self.kind == "sessions":
+            sessions = getattr(app, "_last_sessions", [])
+            self.query_one(SessionTable).update_sessions(sessions)
+
+
 class ProcessTable(Static):
     """Top N processos por CPU/RAM. Toggle com 'p'."""
 
@@ -843,6 +935,12 @@ class ChatPane(Vertical):
             log.write("[bold]TUI[/]")
             log.write("  [cyan]↑/↓ + Enter[/]  na tabela → foca o chat numa sessão")
             log.write("  [cyan]r[/]            refresh manual do painel")
+            log.write("  [cyan]a[/]            sessões ativas ↔ todas (vivas + mortas)")
+            log.write("  [cyan]p[/]            liga/desliga painel Processos")
+            log.write("  [cyan]s[/]            sort processos: CPU% ↔ RAM%")
+            log.write("  [cyan], . =[/]        redimensionar split (Esc reset)")
+            log.write("  [cyan]1 2 3 4[/]      abre Cota / Máquina / Processos / Sessões em fullscreen")
+            log.write("  [cyan]click no título[/]   também abre fullscreen")
             log.write("  [cyan]q[/]            sair")
             log.write("")
             log.write("[bold]chat — comandos[/]")
@@ -1038,6 +1136,10 @@ class MonitorApp(App):
         Binding("comma", "shrink_left", "← chat"),
         Binding("full_stop", "grow_left", "→ chat"),
         Binding("equals_sign", "reset_split", "Reset 50/50"),
+        Binding("1", "open_modal('quota')", "Cota"),
+        Binding("2", "open_modal('system')", "Máquina"),
+        Binding("3", "open_modal('processes')", "Procs"),
+        Binding("4", "open_modal('sessions')", "Sessões"),
     ]
 
     show_all_sessions: reactive[bool] = reactive(False)
@@ -1052,16 +1154,16 @@ class MonitorApp(App):
         with Horizontal(id="main-row"):
             with Vertical(id="left-column"):
                 with Vertical(id="quota-section"):
-                    yield Label("● Cota", id="quota-label")
+                    yield SectionLabel("● Cota", "quota", id="quota-label")
                     yield QuotaBar(id="quota-bar")
                 with Vertical(id="system-section"):
-                    yield Label("● Máquina", id="system-label")
+                    yield SectionLabel("● Máquina", "system", id="system-label")
                     yield SystemMonitor(id="system-monitor")
                 with Vertical(id="process-section"):
-                    yield Label("● Processos", id="process-label")
+                    yield SectionLabel("● Processos", "processes", id="process-label")
                     yield ProcessTable(id="process-table-widget")
                 with Vertical(id="session-section"):
-                    yield Label("● Sessões ativas", id="session-label")
+                    yield SectionLabel("● Sessões ativas", "sessions", id="session-label")
                     yield SessionTable(id="session-table-widget")
             with Vertical(id="right-column"):
                 with Vertical(id="chat-section"):
@@ -1075,10 +1177,12 @@ class MonitorApp(App):
 
     def refresh_data(self) -> None:
         quota = load_quota()
+        self._last_quota = quota
         self.query_one(QuotaBar).update_quota(quota)
         self.query_one(SystemMonitor).update_status(get_system_status())
 
         sessions = load_sessions(include_dead=self.show_all_sessions)
+        self._last_sessions = sessions
         self.query_one(SessionTable).update_sessions(sessions)
         self.query_one(ChatPane).update_context(sessions, quota)
 
@@ -1140,6 +1244,15 @@ class MonitorApp(App):
 
     def action_reset_split(self) -> None:
         self.left_ratio = 50
+
+    # ── modal fullscreen ────────────────────────────────────────────────────
+    def action_open_modal(self, kind: str) -> None:
+        if kind == "processes" and not self.show_processes:
+            return  # painel oculto, não abre modal
+        self.push_screen(PanelModal(kind))
+
+    def on_section_label_clicked(self, event: SectionLabel.Clicked) -> None:
+        self.action_open_modal(event.section)
 
     def on_session_table_session_selected(self, event: SessionTable.SessionSelected) -> None:
         self.query_one(ChatPane).set_focus(event.session_id)

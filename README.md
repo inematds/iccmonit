@@ -9,7 +9,7 @@ Pensado para rodar em um **terminal separado** ao lado das suas sessões Claude 
 - Tamanho do `CLAUDE.md`, da memória do projeto, agentes lançados e skills invocadas
 - Chat com Claude (Haiku por padrão) ciente do estado do painel
 
-Versão atual: **v1.09.03**
+Versão atual: **v1.10.03**
 
 ![iccmonit em execução — painel de cota, sessões e chat focado](docs/img/screenshot.jpg)
 
@@ -115,6 +115,12 @@ Usa o pacote **`textual-serve`** para empacotar a TUI atual num WebSocket + xter
 | `,`   | Encolhe a coluna esquerda em 5% (chat fica maior) |
 | `.`   | Aumenta a coluna esquerda em 5% (chat fica menor) |
 | `=`   | Reseta a divisão em 50/50 |
+| `1`   | Abre **Cota** em fullscreen modal |
+| `2`   | Abre **Máquina** em fullscreen |
+| `3`   | Abre **Processos** em fullscreen (precisa estar ativado com `p`) |
+| `4`   | Abre **Sessões** em fullscreen |
+| **click** no título de uma seção | Mesmo efeito do `1`-`4` correspondente |
+| `Esc` ou `q` (no modal) | Fecha o modal |
 | `q`   | Sair |
 
 Auto-refresh a cada **10 segundos** por padrão (configurável em `config.json` via `refresh_interval_seconds`).
