@@ -19,7 +19,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.10.03"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.11.03"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -188,6 +188,77 @@ def get_system_status() -> dict:
         "disk": get_disk_info(),
         "gpu": get_gpu_info(),
     }
+
+
+def get_docker_info() -> dict:
+    """Lista todos os containers via 'docker ps -a'."""
+    try:
+        r = subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{.Names}}|{{.Status}}|{{.Ports}}|{{.Image}}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode != 0:
+            return {"available": False, "containers": [], "error": r.stderr.strip()[:100]}
+        containers = []
+        for line in r.stdout.strip().splitlines():
+            parts = line.split("|", 3)
+            if len(parts) < 4:
+                continue
+            name, status, ports, image = parts
+            containers.append({
+                "name": name,
+                "status": status[:30],
+                "ports": ports[:40],
+                "image": image[:40],
+                "running": status.startswith("Up"),
+            })
+        return {"available": True, "containers": containers}
+    except FileNotFoundError:
+        return {"available": False, "containers": [], "error": "docker não instalado"}
+    except Exception as e:
+        return {"available": False, "containers": [], "error": str(e)[:80]}
+
+
+def get_boot_services() -> dict:
+    """systemd services habilitados pra subir no boot, com estado atual."""
+    try:
+        r1 = subprocess.run(
+            ["systemctl", "list-unit-files", "--state=enabled", "--type=service",
+             "--no-pager", "--no-legend"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r1.returncode != 0:
+            return {"available": False, "services": []}
+        enabled = []
+        for line in r1.stdout.strip().splitlines():
+            parts = line.split()
+            if parts and parts[0].endswith(".service"):
+                enabled.append(parts[0])
+        # 1 chamada pra pegar o estado de todos os services
+        r2 = subprocess.run(
+            ["systemctl", "list-units", "--type=service", "--all",
+             "--no-pager", "--no-legend", "--plain"],
+            capture_output=True, text=True, timeout=5,
+        )
+        sub_state: dict[str, str] = {}
+        for line in r2.stdout.strip().splitlines():
+            parts = line.split(None, 4)
+            if len(parts) >= 4:
+                # unit, load, active, sub, [description]
+                sub_state[parts[0]] = parts[3]
+        services = []
+        for u in enabled:
+            state = sub_state.get(u, "unknown")
+            services.append({
+                "name": u.removesuffix(".service"),
+                "state": state,
+                "active": state == "running",
+            })
+        return {"available": True, "services": services}
+    except FileNotFoundError:
+        return {"available": False, "services": [], "error": "systemctl não disponível"}
+    except Exception as e:
+        return {"available": False, "services": [], "error": str(e)[:80]}
 
 
 def get_top_processes(n: int = 10, sort_by: str = "cpu") -> list[dict]:
@@ -522,6 +593,33 @@ class SystemMonitor(Static):
         self.update("\n".join(lines))
 
 
+class ServicesPanel(Static):
+    """Resumo compacto de Docker + systemd boot. Modal '5' mostra tudo."""
+
+    def update_services(self, docker: dict, boot: dict) -> None:
+        lines: list[str] = []
+        # Docker
+        if docker.get("available"):
+            containers = docker["containers"]
+            running = [c for c in containers if c["running"]]
+            lines.append(f"[bold]Docker[/]   {len(running)}/{len(containers)} containers ativos")
+            for c in running[:6]:
+                ports = (c["ports"] or "-")[:35]
+                lines.append(f"  [green]✓[/] {c['name'][:24]:<24} {c['status'][:18]:<18} {ports}")
+            if len(running) > 6:
+                lines.append(f"  [dim]... +{len(running)-6} ativos · use [cyan]5[/dim] pra ver tudo[dim] (incl. parados)[/]")
+        else:
+            lines.append(f"[bold]Docker[/]   [dim]{docker.get('error', 'indisponível')}[/]")
+        # Boot — só sumário inline, lista completa no modal
+        if boot.get("available"):
+            services = boot["services"]
+            active = sum(1 for s in services if s["active"])
+            lines.append(f"[bold]Boot[/]     {active}/{len(services)} systemd .service habilitados rodando  [dim](abra modal pra ver lista)[/]")
+        else:
+            lines.append(f"[bold]Boot[/]     [dim]{boot.get('error', 'indisponível')}[/]")
+        self.update("\n".join(lines))
+
+
 class SectionLabel(Label):
     """Label do título de uma seção. Click abre o modal fullscreen daquela seção."""
 
@@ -578,6 +676,7 @@ class PanelModal(ModalScreen):
         "system": "Máquina",
         "processes": "Processos",
         "sessions": "Sessões",
+        "services": "Serviços (Docker + Boot)",
     }
 
     def __init__(self, kind: str) -> None:
@@ -596,6 +695,8 @@ class PanelModal(ModalScreen):
                 yield ProcessTable(id="modal-procs")
             elif self.kind == "sessions":
                 yield SessionTable(id="modal-sess")
+            elif self.kind == "services":
+                yield ScrollableContainer(Static(id="modal-services-content"))
 
     def on_mount(self) -> None:
         app = self.app
@@ -611,6 +712,38 @@ class PanelModal(ModalScreen):
         elif self.kind == "sessions":
             sessions = getattr(app, "_last_sessions", [])
             self.query_one(SessionTable).update_sessions(sessions)
+        elif self.kind == "services":
+            docker = get_docker_info()
+            boot = get_boot_services()
+            lines: list[str] = []
+            # Docker
+            if docker.get("available"):
+                containers = docker["containers"]
+                running = sum(1 for c in containers if c["running"])
+                lines.append(f"[bold magenta]── Docker — {running}/{len(containers)} ativos ──[/]")
+                for c in containers:
+                    icon = "[green]✓[/]" if c["running"] else "[red]✗[/]"
+                    ports = (c["ports"] or "-")[:36]
+                    lines.append(
+                        f"  {icon} [bold]{c['name'][:26]:<26}[/] {c['status'][:24]:<24} {ports:<36} [dim]{c['image']}[/]"
+                    )
+            else:
+                lines.append(f"[dim]Docker: {docker.get('error', 'indisponível')}[/]")
+            lines.append("")
+            # Boot
+            if boot.get("available"):
+                services = boot["services"]
+                active = sum(1 for s in services if s["active"])
+                lines.append(f"[bold magenta]── Boot (systemd enabled) — {active}/{len(services)} rodando ──[/]")
+                # ordena: ativos primeiro
+                services_sorted = sorted(services, key=lambda s: (not s["active"], s["name"]))
+                for s in services_sorted:
+                    icon = "[green]✓[/]" if s["active"] else "[red]✗[/]"
+                    state_color = "green" if s["active"] else "dim red"
+                    lines.append(f"  {icon} [bold]{s['name'][:38]:<38}[/]  [{state_color}]{s['state']}[/]")
+            else:
+                lines.append(f"[dim]systemd: {boot.get('error', 'indisponível')}[/]")
+            self.query_one("#modal-services-content", Static).update("\n".join(lines))
 
 
 class ProcessTable(Static):
@@ -937,9 +1070,10 @@ class ChatPane(Vertical):
             log.write("  [cyan]r[/]            refresh manual do painel")
             log.write("  [cyan]a[/]            sessões ativas ↔ todas (vivas + mortas)")
             log.write("  [cyan]p[/]            liga/desliga painel Processos")
+            log.write("  [cyan]v[/]            liga/desliga painel Serviços (Docker + boot)")
             log.write("  [cyan]s[/]            sort processos: CPU% ↔ RAM%")
-            log.write("  [cyan], . =[/]        redimensionar split (Esc reset)")
-            log.write("  [cyan]1 2 3 4[/]      abre Cota / Máquina / Processos / Sessões em fullscreen")
+            log.write("  [cyan], . =[/]        redimensionar split")
+            log.write("  [cyan]1 2 3 4 5[/]    fullscreen: Cota / Máquina / Procs / Sessões / Serviços")
             log.write("  [cyan]click no título[/]   também abre fullscreen")
             log.write("  [cyan]q[/]            sair")
             log.write("")
@@ -1104,7 +1238,17 @@ class MonitorApp(App):
     #process-section.-visible {
         display: block;
     }
-    #quota-label, #system-label, #process-label, #session-label, #chat-label {
+    #services-section {
+        height: auto;
+        border: solid $primary;
+        padding: 0 1;
+        margin-bottom: 1;
+        display: none;
+    }
+    #services-section.-visible {
+        display: block;
+    }
+    #quota-label, #system-label, #process-label, #services-label, #session-label, #chat-label {
         text-style: bold;
         color: $accent;
     }
@@ -1132,6 +1276,7 @@ class MonitorApp(App):
         Binding("r", "refresh", "Refresh"),
         Binding("a", "toggle_all", "Todas/Ativas"),
         Binding("p", "toggle_processes", "Processos"),
+        Binding("v", "toggle_services", "Serviços"),
         Binding("s", "toggle_sort", "Sort CPU/RAM"),
         Binding("comma", "shrink_left", "← chat"),
         Binding("full_stop", "grow_left", "→ chat"),
@@ -1140,10 +1285,12 @@ class MonitorApp(App):
         Binding("2", "open_modal('system')", "Máquina"),
         Binding("3", "open_modal('processes')", "Procs"),
         Binding("4", "open_modal('sessions')", "Sessões"),
+        Binding("5", "open_modal('services')", "Serviços"),
     ]
 
     show_all_sessions: reactive[bool] = reactive(False)
     show_processes: reactive[bool] = reactive(False)
+    show_services: reactive[bool] = reactive(False)
     proc_sort: reactive[str] = reactive("cpu")
     left_ratio: reactive[int] = reactive(50)
 
@@ -1162,6 +1309,9 @@ class MonitorApp(App):
                 with Vertical(id="process-section"):
                     yield SectionLabel("● Processos", "processes", id="process-label")
                     yield ProcessTable(id="process-table-widget")
+                with Vertical(id="services-section"):
+                    yield SectionLabel("● Serviços", "services", id="services-label")
+                    yield ServicesPanel(id="services-panel")
                 with Vertical(id="session-section"):
                     yield SectionLabel("● Sessões ativas", "sessions", id="session-label")
                     yield SessionTable(id="session-table-widget")
@@ -1194,6 +1344,10 @@ class MonitorApp(App):
             sort_label = "CPU" if self.proc_sort == "cpu" else "RAM"
             self.query_one("#process-label", Label).update(f"● Processos — top {n} por {sort_label}")
 
+        # serviços (Docker + boot) só rodam quando visível — chamadas pesadas
+        if self.show_services:
+            self.query_one(ServicesPanel).update_services(get_docker_info(), get_boot_services())
+
         # label da seção de sessões
         scope = "todas (vivas + mortas)" if self.show_all_sessions else "ativas"
         self.query_one("#session-label", Label).update(f"● Sessões {scope}")
@@ -1217,6 +1371,15 @@ class MonitorApp(App):
         self.show_processes = not self.show_processes
         section = self.query_one("#process-section")
         if self.show_processes:
+            section.add_class("-visible")
+        else:
+            section.remove_class("-visible")
+        self.refresh_data()
+
+    def action_toggle_services(self) -> None:
+        self.show_services = not self.show_services
+        section = self.query_one("#services-section")
+        if self.show_services:
             section.add_class("-visible")
         else:
             section.remove_class("-visible")
@@ -1247,8 +1410,7 @@ class MonitorApp(App):
 
     # ── modal fullscreen ────────────────────────────────────────────────────
     def action_open_modal(self, kind: str) -> None:
-        if kind == "processes" and not self.show_processes:
-            return  # painel oculto, não abre modal
+        # modal sempre disponível, mesmo se o painel inline estiver oculto
         self.push_screen(PanelModal(kind))
 
     def on_section_label_clicked(self, event: SectionLabel.Clicked) -> None:

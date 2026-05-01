@@ -9,7 +9,7 @@ Pensado para rodar em um **terminal separado** ao lado das suas sessões Claude 
 - Tamanho do `CLAUDE.md`, da memória do projeto, agentes lançados e skills invocadas
 - Chat com Claude (Haiku por padrão) ciente do estado do painel
 
-Versão atual: **v1.10.03**
+Versão atual: **v1.11.03**
 
 ![iccmonit em execução — painel de cota, sessões e chat focado](docs/img/screenshot.jpg)
 
@@ -111,14 +111,16 @@ Usa o pacote **`textual-serve`** para empacotar a TUI atual num WebSocket + xter
 | `r`   | Refresh manual |
 | `a`   | Alterna entre **Sessões ativas** ↔ **todas** (vivas + mortas) |
 | `p`   | Liga/desliga o painel **Processos** (top N da máquina) |
+| `v`   | Liga/desliga o painel **Serviços** (Docker + systemd boot) |
 | `s`   | Quando Processos visível: alterna ordenação **CPU% ↔ RAM%** |
 | `,`   | Encolhe a coluna esquerda em 5% (chat fica maior) |
 | `.`   | Aumenta a coluna esquerda em 5% (chat fica menor) |
 | `=`   | Reseta a divisão em 50/50 |
 | `1`   | Abre **Cota** em fullscreen modal |
 | `2`   | Abre **Máquina** em fullscreen |
-| `3`   | Abre **Processos** em fullscreen (precisa estar ativado com `p`) |
+| `3`   | Abre **Processos** em fullscreen |
 | `4`   | Abre **Sessões** em fullscreen |
+| `5`   | Abre **Serviços** em fullscreen (Docker completo + systemd boot completo) |
 | **click** no título de uma seção | Mesmo efeito do `1`-`4` correspondente |
 | `Esc` ou `q` (no modal) | Fecha o modal |
 | `q`   | Sair |
@@ -182,7 +184,29 @@ Coleta via `ps -eo pid,user,pcpu,pmem,etime,comm --sort=-%cpu` (sem dependência
 
 Configurável: `top_processes_n` no `config.json` (padrão `10`). O painel só polla `ps` quando está visível — não tem custo quando oculto.
 
-### 4. Sessões (ativas ou todas)
+### 4. Serviços (opcional — tecla `v`)
+
+Resumo de **Docker** e **systemd boot** num painel só. Default: oculto.
+
+**Inline mostra só o que importa:**
+
+```
+Docker   10/44 containers ativos
+  ✓ imkt4-postgres-1     Up 4 days     0.0.0.0:5432->5432/tcp
+  ✓ openclaw-ollama      Up 4 days     0.0.0.0:11434->11434/tcp
+  ✓ open-webui           Up 4 days     0.0.0.0:3000->8080/tcp
+  ... +7 ativos · use 5 pra ver tudo (incl. parados)
+Boot     33/102 systemd .service habilitados rodando  (abra modal pra ver lista)
+```
+
+**Modal (`5`)** mostra a lista completa: todos os containers (incluindo parados, com código de saída) e todas as services systemd habilitadas com estado atual (`running`, `dead`, `exited`, `failed`).
+
+Coleta:
+- Docker via `docker ps -a` — se `docker` não estiver no `$PATH`, mostra "indisponível"
+- Boot via 2 chamadas a `systemctl` (1× `list-unit-files --state=enabled`, 1× `list-units --all` para o estado) — sem polling unitário, leve
+- Só roda quando o painel está visível (zero custo quando oculto)
+
+### 5. Sessões (ativas ou todas)
 
 Tabela com uma linha por sessão Claude Code. Por padrão mostra só sessões com PID alive; pressione **`a`** para incluir as mortas (sessões cujo arquivo em `~/.claude/sessions/*.json` ainda existe mas o processo terminou). Mortas aparecem em cinza com status `morta`. Colunas:
 
@@ -200,7 +224,7 @@ Tabela com uma linha por sessão Claude Code. Por padrão mostra só sessões co
 
 Cada métrica recebe cor azul/verde/amarelo/vermelho conforme thresholds em `config.json`.
 
-### 5. Chat (rodapé)
+### 6. Chat (lateral)
 
 Chat embutido com Claude com **dois modos**:
 
