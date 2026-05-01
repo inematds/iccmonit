@@ -18,7 +18,7 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.06.03"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.07.03"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -187,6 +187,37 @@ def get_system_status() -> dict:
         "disk": get_disk_info(),
         "gpu": get_gpu_info(),
     }
+
+
+def get_top_processes(n: int = 10, sort_by: str = "cpu") -> list[dict]:
+    """Top N processos por %CPU (sort_by='cpu') ou %MEM (sort_by='mem')."""
+    sort_flag = "-%cpu" if sort_by == "cpu" else "-%mem"
+    try:
+        r = subprocess.run(
+            ["ps", "-eo", "pid,user,pcpu,pmem,etime,comm", "--sort=" + sort_flag, "--no-headers"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if r.returncode != 0:
+            return []
+        out = []
+        for line in r.stdout.strip().splitlines()[:n]:
+            parts = line.split(None, 5)
+            if len(parts) < 6:
+                continue
+            try:
+                out.append({
+                    "pid": int(parts[0]),
+                    "user": parts[1][:10],
+                    "cpu_pct": float(parts[2]),
+                    "mem_pct": float(parts[3]),
+                    "etime": parts[4],
+                    "cmd": parts[5][:40],
+                })
+            except ValueError:
+                continue
+        return out
+    except Exception:
+        return []
 
 
 def find_active_transcript(session: dict) -> Optional[Path]:
@@ -488,6 +519,32 @@ class SystemMonitor(Static):
                 )
             )
         self.update("\n".join(lines))
+
+
+class ProcessTable(Static):
+    """Top N processos por CPU/RAM. Toggle com 'p'."""
+
+    def compose(self) -> ComposeResult:
+        yield DataTable(id="proc-table", show_cursor=False)
+
+    def on_mount(self) -> None:
+        t = self.query_one(DataTable)
+        t.add_columns("PID", "User", "CPU%", "RAM%", "Tempo", "Comando")
+
+    def update_processes(self, procs: list[dict]) -> None:
+        t = self.query_one(DataTable)
+        t.clear()
+        for p in procs:
+            cpu_color = color_for(p["cpu_pct"], "system_pct")
+            mem_color = color_for(p["mem_pct"], "system_pct")
+            t.add_row(
+                str(p["pid"]),
+                p["user"],
+                colored(f"{p['cpu_pct']:.1f}", cpu_color),
+                colored(f"{p['mem_pct']:.1f}", mem_color),
+                p["etime"],
+                p["cmd"],
+            )
 
 
 class SessionTable(Static):
@@ -928,7 +985,17 @@ class MonitorApp(App):
         padding: 0 1;
         margin-bottom: 1;
     }
-    #quota-label, #system-label, #session-label, #chat-label {
+    #process-section {
+        height: 12;
+        border: solid $primary;
+        padding: 0 1;
+        margin-bottom: 1;
+        display: none;
+    }
+    #process-section.-visible {
+        display: block;
+    }
+    #quota-label, #system-label, #process-label, #session-label, #chat-label {
         text-style: bold;
         color: $accent;
     }
@@ -955,9 +1022,13 @@ class MonitorApp(App):
         Binding("q", "quit", "Sair"),
         Binding("r", "refresh", "Refresh"),
         Binding("a", "toggle_all", "Todas/Ativas"),
+        Binding("p", "toggle_processes", "Processos"),
+        Binding("s", "toggle_sort", "Sort CPU/RAM"),
     ]
 
     show_all_sessions: reactive[bool] = reactive(False)
+    show_processes: reactive[bool] = reactive(False)
+    proc_sort: reactive[str] = reactive("cpu")
 
     TITLE = f"{CONFIG.get('title', 'INEMA Claude Monitor')} {VERSION}"
 
@@ -970,6 +1041,9 @@ class MonitorApp(App):
             with Vertical(id="system-section"):
                 yield Label("● Máquina", id="system-label")
                 yield SystemMonitor(id="system-monitor")
+            with Vertical(id="process-section"):
+                yield Label("● Processos", id="process-label")
+                yield ProcessTable(id="process-table-widget")
             with Vertical(id="session-section"):
                 yield Label("● Sessões ativas", id="session-label")
                 yield SessionTable(id="session-table-widget")
@@ -991,7 +1065,15 @@ class MonitorApp(App):
         self.query_one(SessionTable).update_sessions(sessions)
         self.query_one(ChatPane).update_context(sessions, quota)
 
-        # atualiza label da seção
+        # processos só atualizam se o painel está visível (evita ps a cada refresh)
+        if self.show_processes:
+            n = CONFIG.get("top_processes_n", 10)
+            procs = get_top_processes(n=n, sort_by=self.proc_sort)
+            self.query_one(ProcessTable).update_processes(procs)
+            sort_label = "CPU" if self.proc_sort == "cpu" else "RAM"
+            self.query_one("#process-label", Label).update(f"● Processos — top {n} por {sort_label}")
+
+        # label da seção de sessões
         scope = "todas (vivas + mortas)" if self.show_all_sessions else "ativas"
         self.query_one("#session-label", Label).update(f"● Sessões {scope}")
 
@@ -1008,6 +1090,21 @@ class MonitorApp(App):
 
     def action_toggle_all(self) -> None:
         self.show_all_sessions = not self.show_all_sessions
+        self.refresh_data()
+
+    def action_toggle_processes(self) -> None:
+        self.show_processes = not self.show_processes
+        section = self.query_one("#process-section")
+        if self.show_processes:
+            section.add_class("-visible")
+        else:
+            section.remove_class("-visible")
+        self.refresh_data()
+
+    def action_toggle_sort(self) -> None:
+        if not self.show_processes:
+            return
+        self.proc_sort = "mem" if self.proc_sort == "cpu" else "cpu"
         self.refresh_data()
 
     def on_session_table_session_selected(self, event: SessionTable.SessionSelected) -> None:

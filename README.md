@@ -9,7 +9,7 @@ Pensado para rodar em um **terminal separado** ao lado das suas sessões Claude 
 - Tamanho do `CLAUDE.md`, da memória do projeto, agentes lançados e skills invocadas
 - Chat com Claude (Haiku por padrão) ciente do estado do painel
 
-Versão atual: **v1.06.03**
+Versão atual: **v1.07.03**
 
 ![iccmonit em execução — painel de cota, sessões e chat focado](docs/img/screenshot.jpg)
 
@@ -110,6 +110,8 @@ Usa o pacote **`textual-serve`** para empacotar a TUI atual num WebSocket + xter
 |-------|------|
 | `r`   | Refresh manual |
 | `a`   | Alterna entre **Sessões ativas** ↔ **todas** (vivas + mortas) |
+| `p`   | Liga/desliga o painel **Processos** (top N da máquina) |
+| `s`   | Quando Processos visível: alterna ordenação **CPU% ↔ RAM%** |
 | `q`   | Sair |
 
 Auto-refresh a cada **10 segundos** por padrão (configurável em `config.json` via `refresh_interval_seconds`).
@@ -118,7 +120,7 @@ Auto-refresh a cada **10 segundos** por padrão (configurável em `config.json` 
 
 ## Painéis da TUI
 
-A TUI tem quatro seções verticais:
+A TUI tem cinco seções verticais (a de Processos é opcional):
 
 ### 1. Cota (topo)
 
@@ -145,7 +147,28 @@ Uso de hardware do servidor — barras coloridas pelos thresholds de `system_pct
 
 CPU usa `os.getloadavg()` (não `psutil`), RAM lê `/proc/meminfo`, GPU é opcional via `nvidia-smi`. Sem dependências extras.
 
-### 3. Sessões (ativas ou todas)
+### 3. Processos (opcional — tecla `p`)
+
+Top N processos da máquina, ordenados por **%CPU** ou **%RAM** (alterna com `s`). Default: oculto.
+
+| Coluna | Mostra |
+|--------|--------|
+| `PID` | identificador do processo |
+| `User` | dono (truncado em 10 chars) |
+| `CPU%` | % de CPU (cor pelos thresholds de `system_pct`) |
+| `RAM%` | % de RAM (mesma escala de cor) |
+| `Tempo` | etime (`HH:MM:SS` ou `D-HH:MM:SS`) |
+| `Comando` | comm truncado em 40 chars |
+
+Coleta via `ps -eo pid,user,pcpu,pmem,etime,comm --sort=-%cpu` (sem dependência extra). Útil pra:
+
+- Saber **quais sessões `claude` estão consumindo CPU/RAM** (cada PID aparece separado)
+- Detectar processos pesados quando o painel Máquina ficar 🟡/🔴
+- Ver `ollama`, GPU workers, dev servers etc. na mesma tela
+
+Configurável: `top_processes_n` no `config.json` (padrão `10`). O painel só polla `ps` quando está visível — não tem custo quando oculto.
+
+### 4. Sessões (ativas ou todas)
 
 Tabela com uma linha por sessão Claude Code. Por padrão mostra só sessões com PID alive; pressione **`a`** para incluir as mortas (sessões cujo arquivo em `~/.claude/sessions/*.json` ainda existe mas o processo terminou). Mortas aparecem em cinza com status `morta`. Colunas:
 
@@ -163,7 +186,7 @@ Tabela com uma linha por sessão Claude Code. Por padrão mostra só sessões co
 
 Cada métrica recebe cor azul/verde/amarelo/vermelho conforme thresholds em `config.json`.
 
-### 4. Chat (rodapé)
+### 5. Chat (rodapé)
 
 Chat embutido com Claude com **dois modos**:
 
