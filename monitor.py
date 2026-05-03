@@ -20,7 +20,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.12.04"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.12.05"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -387,16 +387,19 @@ def get_session_cost(session: dict) -> float:
     return total_cost
 
 
-def load_quota() -> dict:
+def load_quota() -> tuple[dict, Optional[float]]:
+    """Retorna (quota_dict, cache_age_segundos).
+
+    Sem mais cutoff de 2min — devolve o que tem mesmo se velho.
+    Quem renderiza decide mostrar como 'stale' visualmente.
+    """
     if not LIMITS_CACHE.exists():
-        return {}
+        return {}, None
     try:
         age = time.time() - LIMITS_CACHE.stat().st_mtime
-        if age > 120:
-            return {}
-        return json.loads(LIMITS_CACHE.read_text())
+        return json.loads(LIMITS_CACHE.read_text()), age
     except Exception:
-        return {}
+        return {}, None
 
 
 def get_oauth_token() -> Optional[str]:
@@ -540,7 +543,7 @@ class QuotaBar(Static):
         reset = utc_to_local(reset_iso) if reset_iso else "?"
         return f"[bold]{label}[/] [{color}]{bar} {pct:.0f}%[/] → {reset}"
 
-    def update_quota(self, quota: dict) -> None:
+    def update_quota(self, quota: dict, cache_age: Optional[float] = None) -> None:
         lines = []
         fh = quota.get("five_hour", {})
         if fh:
@@ -551,7 +554,16 @@ class QuotaBar(Static):
         sds = quota.get("seven_day_sonnet", {})
         if sds and sds.get("utilization") is not None:
             lines.append(self.render_quota("7d♪", sds.get("utilization", 0), sds.get("resets_at", "")))
-        self.update("\n".join(lines) if lines else "[dim]aguardando API...[/]")
+        if not lines:
+            self.update("[dim]aguardando API...[/]")
+            return
+        # marca staleness se o cache do statusline atrasou
+        if cache_age is not None:
+            if cache_age > 300:
+                lines.append(f"[red]cache velho: {int(cache_age/60)}min — statusline parou?[/]")
+            elif cache_age > 120:
+                lines.append(f"[yellow]cache: {int(cache_age)}s atrás[/]")
+        self.update("\n".join(lines))
 
 
 class SystemMonitor(Static):
@@ -1412,7 +1424,7 @@ class MonitorApp(App):
     @work(thread=True, exclusive=True, group="refresh")
     def _refresh_data_worker(self) -> None:
         """Pesado (lê transcripts, roda subprocess) — fora da main thread."""
-        quota = load_quota()
+        quota, quota_age = load_quota()
         sys_status = get_system_status()
         sessions = load_sessions(include_dead=self.show_all_sessions)
 
@@ -1436,19 +1448,24 @@ class MonitorApp(App):
 
         self.app.call_from_thread(
             self._apply_refresh,
-            quota, sys_status, sessions, enriched, procs, services_data,
+            quota, quota_age, sys_status, sessions, enriched, procs, services_data,
         )
 
-    def _apply_refresh(self, quota, sys_status, sessions, enriched, procs, services_data) -> None:
-        """Roda na main thread — atualiza widgets atomicamente."""
-        self._last_quota = quota
+    def _apply_refresh(self, quota, quota_age, sys_status, sessions, enriched, procs, services_data) -> None:
+        """Roda na main thread — atualiza widgets atomicamente.
+
+        Cota: só sobrescreve _last_quota se vier dado novo, senão mantém
+        os valores anteriores (e marca staleness via quota_age).
+        """
+        if quota:
+            self._last_quota = quota
         self._last_sessions = sessions
         self._last_refresh_at = time.time()
 
-        self.query_one(QuotaBar).update_quota(quota)
+        self.query_one(QuotaBar).update_quota(self._last_quota or {}, cache_age=quota_age)
         self.query_one(SystemMonitor).update_status(sys_status)
         self.query_one(SessionTable).update_sessions_enriched(enriched)
-        self.query_one(ChatPane).update_context(sessions, quota)
+        self.query_one(ChatPane).update_context(sessions, self._last_quota or {})
 
         if self.show_processes and procs is not None:
             n = CONFIG.get("top_processes_n", 10)
