@@ -22,7 +22,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.16.10"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.17.11"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -663,44 +663,52 @@ class SectionLabel(Label):
 
 
 class CloseButton(Static):
-    """[ X ] clicável que fecha o modal pai."""
+    """[ X ] clicável que fecha o overlay (ou modal) pai."""
 
     def __init__(self, **kwargs):
         super().__init__("[ X ]", **kwargs)
         self.tooltip = "fechar (Esc)"
 
     def on_click(self, event) -> None:
-        # sobe a árvore até achar o ModalScreen e fecha ele
+        # 1) tenta um PanelOverlay ancestor (modo overlay in-place)
+        node = self.parent
+        while node is not None:
+            if isinstance(node, PanelOverlay):
+                node.hide()
+                return
+            node = getattr(node, "parent", None)
+        # 2) fallback: ModalScreen tradicional
         screen = self.screen
         if isinstance(screen, ModalScreen):
             screen.dismiss()
 
 
-class PanelModal(ModalScreen):
-    """Mostra uma seção em tela cheia. Esc/q/click no [ X ] fecha."""
+class PanelOverlay(Vertical):
+    """Overlay que ocupa SÓ a coluna esquerda — chat fica visível à direita."""
 
     DEFAULT_CSS = """
-    PanelModal {
-        align: center middle;
-    }
-    #modal-frame {
-        width: 95%;
-        height: 95%;
+    PanelOverlay {
+        display: none;
+        height: 1fr;
         border: heavy $accent;
-        padding: 1 2;
+        padding: 1;
         background: $surface;
+        margin-bottom: 1;
     }
-    #modal-header {
+    PanelOverlay.-active {
+        display: block;
+    }
+    PanelOverlay #overlay-header {
         height: 1;
         margin-bottom: 1;
     }
-    #modal-title {
+    PanelOverlay #overlay-title {
         text-style: bold;
         color: $accent;
         width: 1fr;
         height: 1;
     }
-    #modal-close {
+    PanelOverlay #overlay-close {
         width: auto;
         min-width: 7;
         height: 1;
@@ -710,41 +718,22 @@ class PanelModal(ModalScreen):
         padding: 0 1;
         content-align: center middle;
     }
-    #modal-close:hover {
+    PanelOverlay #overlay-close:hover {
         background: $error 60%;
     }
-    #modal-body {
+    PanelOverlay #overlay-body {
         height: 1fr;
     }
-    #modal-data-col {
-        width: 70%;
-        height: 1fr;
-        padding-right: 1;
-    }
-    #modal-chat-col {
-        width: 30%;
-        height: 1fr;
-        border-left: solid $accent;
-        padding-left: 1;
-    }
-    #modal-frame DataTable {
+    PanelOverlay DataTable {
         height: 1fr;
     }
-    #modal-frame QuotaBar, #modal-frame SystemMonitor {
+    PanelOverlay QuotaBar, PanelOverlay SystemMonitor {
         height: auto;
     }
-    #modal-data-col ScrollableContainer {
+    PanelOverlay ScrollableContainer {
         height: 1fr;
-    }
-    #modal-services-content {
-        height: auto;
     }
     """
-
-    BINDINGS = [
-        Binding("escape", "dismiss", "Fechar"),
-        Binding("q", "dismiss", "Fechar"),
-    ]
 
     TITLES = {
         "quota": "Cota",
@@ -755,31 +744,132 @@ class PanelModal(ModalScreen):
         "boot": "Boot — systemd enabled",
     }
 
-    def __init__(self, kind: str) -> None:
-        super().__init__()
-        self.kind = kind
-
     def compose(self) -> ComposeResult:
-        title = self.TITLES.get(self.kind, "?")
-        with Vertical(id="modal-frame"):
-            with Horizontal(id="modal-header"):
-                yield Label(f"● {title} — fullscreen  [dim](Esc / q = fechar)[/]", id="modal-title")
-                yield CloseButton(id="modal-close")
-            with Horizontal(id="modal-body"):
-                with Vertical(id="modal-data-col"):
-                    if self.kind == "quota":
-                        yield QuotaBar(id="modal-quota")
-                    elif self.kind == "system":
-                        yield SystemMonitor(id="modal-system")
-                    elif self.kind == "processes":
-                        yield ProcessTable(id="modal-procs")
-                    elif self.kind == "sessions":
-                        yield SessionTable(id="modal-sess")
-                    elif self.kind in ("docker", "boot"):
-                        with ScrollableContainer():
-                            yield Static("[dim]preparando...[/]", id="modal-services-content")
-                with Vertical(id="modal-chat-col"):
-                    yield ChatPane(id="modal-chat")
+        with Horizontal(id="overlay-header"):
+            yield Label("", id="overlay-title")
+            yield CloseButton(id="overlay-close")
+        yield Vertical(id="overlay-body")
+
+    def show_kind(self, kind: str, app) -> None:
+        """Popula o overlay com o widget do kind solicitado e exibe."""
+        self.kind = kind
+        self.add_class("-active")
+        self.query_one("#overlay-title", Label).update(
+            f"● {self.TITLES.get(kind, '?')} — expandido  [dim](Esc/q fecha · chat à direita continua disponível)[/]"
+        )
+        body = self.query_one("#overlay-body", Vertical)
+        # limpa anteriores
+        for c in list(body.children):
+            c.remove()
+        # monta o widget apropriado
+        if kind == "quota":
+            w = QuotaBar(id="overlay-quota")
+            body.mount(w)
+            w.update_quota(getattr(app, "_last_quota", {}))
+        elif kind == "system":
+            w = SystemMonitor(id="overlay-system")
+            body.mount(w)
+            w.update("[dim]coletando dados da máquina...[/]")
+            threading.Thread(target=lambda: self._load_system(w), daemon=True).start()
+        elif kind == "processes":
+            w = ProcessTable(id="overlay-procs")
+            body.mount(w)
+            threading.Thread(target=lambda: self._load_processes(w, app), daemon=True).start()
+        elif kind == "sessions":
+            w = SessionTable(id="overlay-sess")
+            body.mount(w)
+            enriched = getattr(app, "_last_enriched", None)
+            if enriched is not None:
+                w.update_sessions_enriched(enriched)
+            else:
+                w.update_sessions(getattr(app, "_last_sessions", []))
+        elif kind in ("docker", "boot"):
+            sc = ScrollableContainer()
+            body.mount(sc)
+            content = Static("[dim]coletando...[/]", id="overlay-services-content")
+            sc.mount(content)
+            target = self._load_docker if kind == "docker" else self._load_boot
+            threading.Thread(target=lambda: target(content), daemon=True).start()
+
+    def hide(self) -> None:
+        self.remove_class("-active")
+        # remove a classe da coluna pra reexibir os painéis
+        try:
+            self.app.query_one("#left-column").remove_class("-overlay-on")
+        except Exception:
+            pass
+        body = self.query_one("#overlay-body", Vertical)
+        for c in list(body.children):
+            c.remove()
+
+    # — workers ─────────────────────────────────────────────────────────────
+    def _load_system(self, widget) -> None:
+        try:
+            status = get_system_status()
+            self.app.call_from_thread(widget.update_status, status)
+        except Exception as e:
+            self.app.call_from_thread(widget.update, f"[red]erro: {e}[/]")
+
+    def _load_processes(self, widget, app) -> None:
+        try:
+            n = CONFIG.get("top_processes_n", 10) * 3
+            sort_by = getattr(app, "proc_sort", "cpu")
+            procs = get_top_processes(n=n, sort_by=sort_by)
+            self.app.call_from_thread(widget.update_processes, procs)
+        except Exception as e:
+            self.app.call_from_thread(
+                self.query_one("#overlay-title", Label).update,
+                f"[red]erro processes: {e}[/]",
+            )
+
+    def _load_docker(self, content_widget) -> None:
+        try:
+            t0 = time.time()
+            docker = get_docker_info()
+            elapsed = time.time() - t0
+            lines: list[str] = []
+            if docker.get("available"):
+                containers = docker["containers"]
+                running = sum(1 for c in containers if c["running"])
+                lines.append(
+                    f"[bold magenta]── Docker — {running}/{len(containers)} ativos ──[/]  [dim](carregou em {elapsed:.2f}s)[/]"
+                )
+                lines.append("[dim]chat à direita: /docker <nome> start|stop|restart|logs[/]")
+                lines.append("")
+                for c in containers:
+                    icon = "[green]✓[/]" if c["running"] else "[red]✗[/]"
+                    ports = (c["ports"] or "-")[:36]
+                    lines.append(
+                        f"  {icon} [bold]{c['name'][:26]:<26}[/] {c['status'][:24]:<24} {ports:<36} [dim]{c['image']}[/]"
+                    )
+            else:
+                lines.append(f"[red]Docker erro:[/] {docker.get('error', 'indisponível')}")
+            self.app.call_from_thread(content_widget.update, "\n".join(lines))
+        except Exception as e:
+            self.app.call_from_thread(content_widget.update, f"[red]exceção docker: {e}[/]")
+
+    def _load_boot(self, content_widget) -> None:
+        try:
+            t0 = time.time()
+            boot = get_boot_services()
+            elapsed = time.time() - t0
+            lines: list[str] = []
+            if boot.get("available"):
+                services = boot["services"]
+                active = sum(1 for s in services if s["active"])
+                lines.append(
+                    f"[bold magenta]── Boot — {active}/{len(services)} rodando ──[/]  [dim](carregou em {elapsed:.2f}s)[/]"
+                )
+                lines.append("")
+                for s in sorted(services, key=lambda s: (not s["active"], s["name"])):
+                    icon = "[green]✓[/]" if s["active"] else "[red]✗[/]"
+                    state_color = "green" if s["active"] else "dim red"
+                    lines.append(f"  {icon} [bold]{s['name'][:38]:<38}[/]  [{state_color}]{s['state']}[/]")
+            else:
+                lines.append(f"[red]systemd erro:[/] {boot.get('error', 'indisponível')}")
+            self.app.call_from_thread(content_widget.update, "\n".join(lines))
+        except Exception as e:
+            self.app.call_from_thread(content_widget.update, f"[red]exceção boot: {e}[/]")
 
     def on_mount(self) -> None:
         # Sempre dispara a carga depois do render pra garantir que os widgets
@@ -1446,53 +1536,85 @@ class ChatPane(Vertical):
 
     @work(thread=True, exclusive=False)
     def _codex_quota_async(self) -> None:
-        """Probe OpenAI: faz GET leve em /v1/models e lê headers de rate limit.
+        """Probe codex/OpenAI. Detecta se está logado em modo ChatGPT ou API key.
 
-        Procura API key em: $OPENAI_API_KEY → ~/.codex/auth.json (codex-cli da OpenAI).
-        OpenAI não expõe 'cota mensal restante' por API; só rate limits da janela atual.
+        - auth_mode='chatgpt' → relata login via Plus/Pro (cota não exposta via API)
+        - api key disponível  → GET em /v1/models e lê headers de rate limit
         """
+        info: dict = {"mode": None, "source": None, "key": None,
+                       "auth_mode": None, "account_id": None,
+                       "last_refresh": None, "headers": None, "error": None}
         try:
-            import urllib.request
+            # 1) tenta env
             key = os.environ.get("OPENAI_API_KEY")
-            source = "OPENAI_API_KEY"
-            if not key:
-                # tenta codex-cli
+            if key:
+                info["mode"] = "api_key"
+                info["source"] = "$OPENAI_API_KEY"
+                info["key"] = key
+            else:
+                # 2) tenta ~/.codex/auth.json
                 codex_auth = Path.home() / ".codex" / "auth.json"
                 if codex_auth.exists():
+                    info["source"] = str(codex_auth)
                     try:
                         d = json.loads(codex_auth.read_text())
-                        key = d.get("OPENAI_API_KEY") or d.get("api_key")
-                        if key:
-                            source = str(codex_auth)
-                    except Exception:
-                        pass
-            if not key:
-                self.app.call_from_thread(
-                    self._on_codex_result,
-                    False, None, None,
-                    "Sem API key — exporte OPENAI_API_KEY ou logue no codex (cria ~/.codex/auth.json)",
+                        info["auth_mode"] = d.get("auth_mode")
+                        info["last_refresh"] = d.get("last_refresh")
+                        toks = d.get("tokens") or {}
+                        info["account_id"] = toks.get("account_id")
+                        # OPENAI_API_KEY pode estar null em modo chatgpt
+                        api_key = d.get("OPENAI_API_KEY") or d.get("api_key")
+                        if api_key:
+                            info["mode"] = "api_key"
+                            info["key"] = api_key
+                        elif info["auth_mode"] == "chatgpt":
+                            info["mode"] = "chatgpt"
+                    except Exception as e:
+                        info["error"] = f"erro lendo auth.json: {e}"
+            # 3) se modo api_key: tenta probe
+            if info["mode"] == "api_key":
+                import urllib.request
+                req = urllib.request.Request(
+                    "https://api.openai.com/v1/models",
+                    headers={"Authorization": f"Bearer {info['key']}"},
                 )
-                return
-            req = urllib.request.Request(
-                "https://api.openai.com/v1/models",
-                headers={"Authorization": f"Bearer {key}"},
-            )
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                headers = dict(resp.headers)
-                # pega só o primeiro modelo da lista pra não pesar
-                _body = resp.read(2048)
-            self.app.call_from_thread(self._on_codex_result, True, headers, source, None)
+                try:
+                    with urllib.request.urlopen(req, timeout=8) as resp:
+                        info["headers"] = dict(resp.headers)
+                        _ = resp.read(2048)
+                except Exception as e:
+                    info["error"] = f"GET /v1/models: {e}"
+            self.app.call_from_thread(self._on_codex_result, info)
         except Exception as e:
-            self.app.call_from_thread(self._on_codex_result, False, None, None, str(e)[:200])
+            info["error"] = str(e)[:200]
+            self.app.call_from_thread(self._on_codex_result, info)
 
-    def _on_codex_result(self, ok, headers, source, err) -> None:
+    def _on_codex_result(self, info: dict) -> None:
         log = self.query_one("#chat-log", RichLog)
-        if not ok:
-            log.write(f"[red]codex erro:[/] {err}")
-            log.write("[dim]OpenAI não tem 'cota mensal' por API — só rate limit da janela atual e[/]")
-            log.write("[dim]uso histórico em /v1/usage. 'Saldo' real só no dashboard web.[/]")
+        mode = info.get("mode")
+        if mode is None:
+            log.write("[red]codex não autenticado.[/]")
+            log.write("[dim]Esperado: $OPENAI_API_KEY ou ~/.codex/auth.json com auth_mode válido.[/]")
+            if info.get("error"):
+                log.write(f"[dim]{info['error']}[/]")
             return
-        log.write(f"[bold]OpenAI rate limits[/]  [dim](key: {source})[/]")
+        if mode == "chatgpt":
+            log.write(f"[green]✓ logado no codex via ChatGPT[/]  [dim]({info['source']})[/]")
+            if info.get("account_id"):
+                log.write(f"  [cyan]account:[/]      {info['account_id']}")
+            if info.get("last_refresh"):
+                log.write(f"  [cyan]token refresh:[/] {info['last_refresh']}")
+            log.write("[yellow]Cota indisponível por API:[/] o modo ChatGPT (Plus/Pro)")
+            log.write("[dim]conta por mensagens, não por tokens. O 'restante' só aparece quando[/]")
+            log.write("[dim]você bate o limite. Pra ver uso/limite, abra chatgpt.com/settings.[/]")
+            return
+        # mode == api_key
+        log.write(f"[green]✓ codex com API key[/]  [dim]({info['source']})[/]")
+        if info.get("error"):
+            log.write(f"[red]erro probe:[/] {info['error']}")
+            return
+        headers = info.get("headers") or {}
+        log.write("[bold]OpenAI rate limits (janela atual):[/]")
         keys = [
             ("x-ratelimit-limit-requests", "req limit"),
             ("x-ratelimit-remaining-requests", "req restantes"),
@@ -1508,8 +1630,7 @@ class ChatPane(Vertical):
                 log.write(f"  [cyan]{label:<14}[/] {v}")
                 any_found = True
         if not any_found:
-            log.write("[dim]nenhum header de rate limit retornado (esquema mudou?)[/]")
-        log.write("[dim](OpenAI não expõe 'cota mensal restante' por API — só dashboard.)[/]")
+            log.write("[dim]nenhum header de rate limit retornado[/]")
 
     def _on_docker_action(self, name: str, action: str, ok: bool, out: str) -> None:
         log = self.query_one("#chat-log", RichLog)
@@ -1675,6 +1796,10 @@ class MonitorApp(App):
     .section-header ModeIndicator:hover {
         color: $accent;
     }
+    /* quando overlay ativo na esquerda, esconde os painéis normais */
+    #left-column.-overlay-on .data-section {
+        display: none;
+    }
     #session-section {
         height: 1fr;
         border: solid $primary;
@@ -1712,10 +1837,11 @@ class MonitorApp(App):
         # ── layout ──
         Binding("comma", "shrink_left", "←"),
         Binding("full_stop", "grow_left", "→"),
-        Binding("equals_sign", "reset_split", "70/30"),
+        Binding("equals_sign", "reset_split", "60/40"),
         # ── internos (já têm widget visual no painel) ──
         Binding("a", "toggle_all", "Todas/Ativas", show=False),
         Binding("s", "toggle_sort", "Sort CPU/RAM", show=False),
+        Binding("escape", "close_overlay", "Fechar overlay", show=False),
     ]
 
     show_all_sessions: reactive[bool] = reactive(False)
@@ -1723,7 +1849,7 @@ class MonitorApp(App):
     show_docker: reactive[bool] = reactive(False)
     show_boot: reactive[bool] = reactive(False)
     proc_sort: reactive[str] = reactive("cpu")
-    left_ratio: reactive[int] = reactive(70)
+    left_ratio: reactive[int] = reactive(60)
 
     TITLE = f"{CONFIG.get('title', 'INEMA Claude Monitor')} {VERSION}"
 
@@ -1731,28 +1857,29 @@ class MonitorApp(App):
         yield Header()
         with Horizontal(id="main-row"):
             with Vertical(id="left-column"):
-                with Vertical(id="quota-section"):
+                with Vertical(id="quota-section", classes="data-section"):
                     yield SectionLabel("● Cota", "quota", id="quota-label")
                     yield QuotaBar(id="quota-bar")
-                with Vertical(id="system-section"):
+                with Vertical(id="system-section", classes="data-section"):
                     yield SectionLabel("● Máquina", "system", id="system-label")
                     yield SystemMonitor(id="system-monitor")
-                with Vertical(id="process-section"):
+                with Vertical(id="process-section", classes="data-section"):
                     with Horizontal(classes="section-header"):
                         yield SectionLabel("● Processos", "processes", id="process-label")
                         yield SortIndicator(id="sort-indicator")
                     yield ProcessTable(id="process-table-widget")
-                with Vertical(id="docker-section"):
+                with Vertical(id="docker-section", classes="data-section"):
                     yield SectionLabel("● Docker", "docker", id="docker-label")
                     yield DockerPanel(id="docker-panel")
-                with Vertical(id="boot-section"):
+                with Vertical(id="boot-section", classes="data-section"):
                     yield SectionLabel("● Boot (systemd)", "boot", id="boot-label")
                     yield BootPanel(id="boot-panel")
-                with Vertical(id="session-section"):
+                with Vertical(id="session-section", classes="data-section"):
                     with Horizontal(classes="section-header"):
                         yield SectionLabel("● Sessões", "sessions", id="session-label")
                         yield ModeIndicator(id="mode-indicator")
                     yield SessionTable(id="session-table-widget")
+                yield PanelOverlay(id="panel-overlay")
             with Vertical(id="right-column"):
                 with Vertical(id="chat-section"):
                     yield Label("● Chat", id="chat-label")
@@ -1927,13 +2054,22 @@ class MonitorApp(App):
         self._update_subtitle()
 
     def action_reset_split(self) -> None:
-        self.left_ratio = 70
+        self.left_ratio = 60
         self._update_subtitle()
 
-    # ── modal fullscreen ────────────────────────────────────────────────────
+    # ── overlay no left-column (não cobre o chat à direita) ─────────────────
     def action_open_modal(self, kind: str) -> None:
-        # modal sempre disponível, mesmo se o painel inline estiver oculto
-        self.push_screen(PanelModal(kind))
+        left = self.query_one("#left-column")
+        left.add_class("-overlay-on")
+        self.query_one(PanelOverlay).show_kind(kind, self)
+
+    def action_close_overlay(self) -> None:
+        try:
+            left = self.query_one("#left-column")
+            left.remove_class("-overlay-on")
+            self.query_one(PanelOverlay).hide()
+        except Exception:
+            pass
 
     def on_section_label_clicked(self, event: SectionLabel.Clicked) -> None:
         self.action_open_modal(event.section)
