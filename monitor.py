@@ -21,7 +21,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.14.06"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.14.07"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -718,6 +718,12 @@ class PanelModal(ModalScreen):
     #modal-frame QuotaBar, #modal-frame SystemMonitor {
         height: auto;
     }
+    #modal-frame ScrollableContainer {
+        height: 1fr;
+    }
+    #modal-services-content {
+        height: auto;
+    }
     """
 
     BINDINGS = [
@@ -753,7 +759,8 @@ class PanelModal(ModalScreen):
             elif self.kind == "sessions":
                 yield SessionTable(id="modal-sess")
             elif self.kind in ("docker", "boot"):
-                yield ScrollableContainer(Static(id="modal-services-content"))
+                with ScrollableContainer():
+                    yield Static("[dim]preparando...[/]", id="modal-services-content")
 
     def on_mount(self) -> None:
         app = self.app
@@ -808,47 +815,65 @@ class PanelModal(ModalScreen):
 
     @work(thread=True, exclusive=True, group="modal-docker")
     def _load_docker_async(self) -> None:
-        docker = get_docker_info()
-        lines: list[str] = []
-        if docker.get("available"):
-            containers = docker["containers"]
-            running = sum(1 for c in containers if c["running"])
-            lines.append(f"[bold magenta]── Docker — {running}/{len(containers)} ativos ──[/]")
-            lines.append("[dim]chat: /docker <nome> start|stop|restart|logs[/]")
-            lines.append("")
-            for c in containers:
-                icon = "[green]✓[/]" if c["running"] else "[red]✗[/]"
-                ports = (c["ports"] or "-")[:36]
+        try:
+            t0 = time.time()
+            docker = get_docker_info()
+            elapsed = time.time() - t0
+            lines: list[str] = []
+            if docker.get("available"):
+                containers = docker["containers"]
+                running = sum(1 for c in containers if c["running"])
                 lines.append(
-                    f"  {icon} [bold]{c['name'][:26]:<26}[/] {c['status'][:24]:<24} {ports:<36} [dim]{c['image']}[/]"
+                    f"[bold magenta]── Docker — {running}/{len(containers)} ativos ──[/]  [dim](carregou em {elapsed:.2f}s)[/]"
                 )
-        else:
-            lines.append(f"[dim]Docker: {docker.get('error', 'indisponível')}[/]")
-        self.app.call_from_thread(self._on_text_loaded, "\n".join(lines))
+                lines.append("[dim]chat: /docker <nome> start|stop|restart|logs[/]")
+                lines.append("")
+                for c in containers:
+                    icon = "[green]✓[/]" if c["running"] else "[red]✗[/]"
+                    ports = (c["ports"] or "-")[:36]
+                    lines.append(
+                        f"  {icon} [bold]{c['name'][:26]:<26}[/] {c['status'][:24]:<24} {ports:<36} [dim]{c['image']}[/]"
+                    )
+            else:
+                lines.append(f"[red]Docker erro:[/] {docker.get('error', 'indisponível')}")
+            self.app.call_from_thread(self._on_text_loaded, "\n".join(lines))
+        except Exception as e:
+            self.app.call_from_thread(self._on_text_loaded, f"[red]exceção no worker:[/] {e}")
 
     @work(thread=True, exclusive=True, group="modal-boot")
     def _load_boot_async(self) -> None:
-        boot = get_boot_services()
-        lines: list[str] = []
-        if boot.get("available"):
-            services = boot["services"]
-            active = sum(1 for s in services if s["active"])
-            lines.append(f"[bold magenta]── Boot (systemd enabled) — {active}/{len(services)} rodando ──[/]")
-            lines.append("")
-            services_sorted = sorted(services, key=lambda s: (not s["active"], s["name"]))
-            for s in services_sorted:
-                icon = "[green]✓[/]" if s["active"] else "[red]✗[/]"
-                state_color = "green" if s["active"] else "dim red"
-                lines.append(f"  {icon} [bold]{s['name'][:38]:<38}[/]  [{state_color}]{s['state']}[/]")
-        else:
-            lines.append(f"[dim]systemd: {boot.get('error', 'indisponível')}[/]")
-        self.app.call_from_thread(self._on_text_loaded, "\n".join(lines))
+        try:
+            t0 = time.time()
+            boot = get_boot_services()
+            elapsed = time.time() - t0
+            lines: list[str] = []
+            if boot.get("available"):
+                services = boot["services"]
+                active = sum(1 for s in services if s["active"])
+                lines.append(
+                    f"[bold magenta]── Boot — {active}/{len(services)} rodando ──[/]  [dim](carregou em {elapsed:.2f}s)[/]"
+                )
+                lines.append("")
+                services_sorted = sorted(services, key=lambda s: (not s["active"], s["name"]))
+                for s in services_sorted:
+                    icon = "[green]✓[/]" if s["active"] else "[red]✗[/]"
+                    state_color = "green" if s["active"] else "dim red"
+                    lines.append(f"  {icon} [bold]{s['name'][:38]:<38}[/]  [{state_color}]{s['state']}[/]")
+            else:
+                lines.append(f"[red]systemd erro:[/] {boot.get('error', 'indisponível')}")
+            self.app.call_from_thread(self._on_text_loaded, "\n".join(lines))
+        except Exception as e:
+            self.app.call_from_thread(self._on_text_loaded, f"[red]exceção no worker:[/] {e}")
 
     def _on_text_loaded(self, text: str) -> None:
         try:
             self.query_one("#modal-services-content", Static).update(text)
-        except Exception:
-            pass
+        except Exception as e:
+            # se o widget sumiu (modal fechou), só ignora; senão loga via header
+            try:
+                self.query_one("#modal-title", Label).update(f"[red]erro ao mostrar conteúdo: {e}[/]")
+            except Exception:
+                pass
 
 
 class ProcessTable(Static):
