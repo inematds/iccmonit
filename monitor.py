@@ -22,7 +22,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.16.09"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.16.10"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -1857,8 +1857,9 @@ class MonitorApp(App):
         self._update_subtitle()
 
     def _update_subtitle(self) -> None:
+        split = f"split {self.left_ratio}/{100 - self.left_ratio}"
         if not self._last_refresh_at:
-            self.sub_title = "carregando..."
+            self.sub_title = f"carregando... · {split}"
             return
         delta = int(time.time() - self._last_refresh_at)
         sessions = self._last_sessions
@@ -1867,7 +1868,7 @@ class MonitorApp(App):
             count = f"{len(sessions)} ({alive} vivas)"
         else:
             count = f"{len(sessions)} viva(s)"
-        self.sub_title = f"atualizado há {delta}s · {count}"
+        self.sub_title = f"atualizado há {delta}s · {count} · {split}"
 
     def action_refresh(self) -> None:
         self.refresh_data()
@@ -1919,12 +1920,15 @@ class MonitorApp(App):
 
     def action_shrink_left(self) -> None:
         self.left_ratio = max(20, self.left_ratio - 5)
+        self._update_subtitle()
 
     def action_grow_left(self) -> None:
         self.left_ratio = min(80, self.left_ratio + 5)
+        self._update_subtitle()
 
     def action_reset_split(self) -> None:
         self.left_ratio = 70
+        self._update_subtitle()
 
     # ── modal fullscreen ────────────────────────────────────────────────────
     def action_open_modal(self, kind: str) -> None:
