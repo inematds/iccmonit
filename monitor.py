@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,7 +22,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.14.07"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.16.08"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -712,13 +713,27 @@ class PanelModal(ModalScreen):
     #modal-close:hover {
         background: $error 60%;
     }
+    #modal-body {
+        height: 1fr;
+    }
+    #modal-data-col {
+        width: 70%;
+        height: 1fr;
+        padding-right: 1;
+    }
+    #modal-chat-col {
+        width: 30%;
+        height: 1fr;
+        border-left: solid $accent;
+        padding-left: 1;
+    }
     #modal-frame DataTable {
         height: 1fr;
     }
     #modal-frame QuotaBar, #modal-frame SystemMonitor {
         height: auto;
     }
-    #modal-frame ScrollableContainer {
+    #modal-data-col ScrollableContainer {
         height: 1fr;
     }
     #modal-services-content {
@@ -750,21 +765,43 @@ class PanelModal(ModalScreen):
             with Horizontal(id="modal-header"):
                 yield Label(f"● {title} — fullscreen  [dim](Esc / q = fechar)[/]", id="modal-title")
                 yield CloseButton(id="modal-close")
-            if self.kind == "quota":
-                yield QuotaBar(id="modal-quota")
-            elif self.kind == "system":
-                yield SystemMonitor(id="modal-system")
-            elif self.kind == "processes":
-                yield ProcessTable(id="modal-procs")
-            elif self.kind == "sessions":
-                yield SessionTable(id="modal-sess")
-            elif self.kind in ("docker", "boot"):
-                with ScrollableContainer():
-                    yield Static("[dim]preparando...[/]", id="modal-services-content")
+            with Horizontal(id="modal-body"):
+                with Vertical(id="modal-data-col"):
+                    if self.kind == "quota":
+                        yield QuotaBar(id="modal-quota")
+                    elif self.kind == "system":
+                        yield SystemMonitor(id="modal-system")
+                    elif self.kind == "processes":
+                        yield ProcessTable(id="modal-procs")
+                    elif self.kind == "sessions":
+                        yield SessionTable(id="modal-sess")
+                    elif self.kind in ("docker", "boot"):
+                        with ScrollableContainer():
+                            yield Static("[dim]preparando...[/]", id="modal-services-content")
+                with Vertical(id="modal-chat-col"):
+                    yield ChatPane(id="modal-chat")
 
     def on_mount(self) -> None:
+        # Sempre dispara a carga depois do render pra garantir que os widgets
+        # estejam mountados quando o thread tentar updatar.
+        self.call_after_refresh(self._kickoff_load)
+
+    def _kickoff_load(self) -> None:
         app = self.app
-        # Quota e Sessions: dados já cached no app, render instantâneo
+        # popula chat lateral do modal com mesmo contexto
+        try:
+            chat = self.query_one("#modal-chat", ChatPane)
+            chat.update_context(
+                getattr(app, "_last_sessions", []),
+                getattr(app, "_last_quota", {}),
+            )
+            log = chat.query_one("#chat-log", RichLog)
+            kind_label = self.TITLES.get(self.kind, self.kind)
+            log.write(f"[bold magenta]contexto:[/] painel [cyan]{kind_label}[/]")
+            log.write("[dim]pergunte sobre o que você está vendo. /help pra comandos.[/]")
+        except Exception:
+            pass
+        # carga dos dados
         if self.kind == "quota":
             self.query_one(QuotaBar).update_quota(getattr(app, "_last_quota", {}))
         elif self.kind == "sessions":
@@ -774,47 +811,36 @@ class PanelModal(ModalScreen):
             else:
                 sessions = getattr(app, "_last_sessions", [])
                 self.query_one(SessionTable).update_sessions(sessions)
-        # Pesados: placeholder + worker
         elif self.kind == "system":
             self.query_one(SystemMonitor).update("[dim]coletando dados da máquina...[/]")
-            self._load_system_async()
+            threading.Thread(target=self._system_thread, daemon=True).start()
         elif self.kind == "processes":
-            t = self.query_one(ProcessTable).query_one(DataTable)
-            t.clear()
-            self._load_processes_async()
+            self.query_one(ProcessTable).query_one(DataTable).clear()
+            threading.Thread(target=self._processes_thread, daemon=True).start()
         elif self.kind == "docker":
             self.query_one("#modal-services-content", Static).update("[dim]coletando docker ps...[/]")
-            self._load_docker_async()
+            threading.Thread(target=self._docker_thread, daemon=True).start()
         elif self.kind == "boot":
-            self.query_one("#modal-services-content", Static).update("[dim]coletando systemctl...[/]")
-            self._load_boot_async()
+            self.query_one("#modal-services-content", Static).update("[dim]coletando systemctl... pode demorar 1-2s[/]")
+            threading.Thread(target=self._boot_thread, daemon=True).start()
 
-    @work(thread=True, exclusive=True, group="modal-system")
-    def _load_system_async(self) -> None:
-        status = get_system_status()
-        self.app.call_from_thread(self._on_system_loaded, status)
-
-    def _on_system_loaded(self, status) -> None:
+    def _system_thread(self) -> None:
         try:
-            self.query_one(SystemMonitor).update_status(status)
-        except Exception:
-            pass  # modal pode ter sido fechado
+            status = get_system_status()
+            self.app.call_from_thread(self._safe_update_widget, SystemMonitor, "update_status", status)
+        except Exception as e:
+            self.app.call_from_thread(self._safe_update_text, f"[red]erro system: {e}[/]")
 
-    @work(thread=True, exclusive=True, group="modal-procs")
-    def _load_processes_async(self) -> None:
-        n = CONFIG.get("top_processes_n", 10) * 3
-        sort_by = getattr(self.app, "proc_sort", "cpu")
-        procs = get_top_processes(n=n, sort_by=sort_by)
-        self.app.call_from_thread(self._on_procs_loaded, procs)
-
-    def _on_procs_loaded(self, procs) -> None:
+    def _processes_thread(self) -> None:
         try:
-            self.query_one(ProcessTable).update_processes(procs)
-        except Exception:
-            pass
+            n = CONFIG.get("top_processes_n", 10) * 3
+            sort_by = getattr(self.app, "proc_sort", "cpu")
+            procs = get_top_processes(n=n, sort_by=sort_by)
+            self.app.call_from_thread(self._safe_update_widget, ProcessTable, "update_processes", procs)
+        except Exception as e:
+            self.app.call_from_thread(self._safe_update_text, f"[red]erro processes: {e}[/]")
 
-    @work(thread=True, exclusive=True, group="modal-docker")
-    def _load_docker_async(self) -> None:
+    def _docker_thread(self) -> None:
         try:
             t0 = time.time()
             docker = get_docker_info()
@@ -836,12 +862,11 @@ class PanelModal(ModalScreen):
                     )
             else:
                 lines.append(f"[red]Docker erro:[/] {docker.get('error', 'indisponível')}")
-            self.app.call_from_thread(self._on_text_loaded, "\n".join(lines))
+            self.app.call_from_thread(self._safe_update_text, "\n".join(lines))
         except Exception as e:
-            self.app.call_from_thread(self._on_text_loaded, f"[red]exceção no worker:[/] {e}")
+            self.app.call_from_thread(self._safe_update_text, f"[red]exceção no thread docker: {e}[/]")
 
-    @work(thread=True, exclusive=True, group="modal-boot")
-    def _load_boot_async(self) -> None:
+    def _boot_thread(self) -> None:
         try:
             t0 = time.time()
             boot = get_boot_services()
@@ -861,19 +886,68 @@ class PanelModal(ModalScreen):
                     lines.append(f"  {icon} [bold]{s['name'][:38]:<38}[/]  [{state_color}]{s['state']}[/]")
             else:
                 lines.append(f"[red]systemd erro:[/] {boot.get('error', 'indisponível')}")
-            self.app.call_from_thread(self._on_text_loaded, "\n".join(lines))
+            self.app.call_from_thread(self._safe_update_text, "\n".join(lines))
         except Exception as e:
-            self.app.call_from_thread(self._on_text_loaded, f"[red]exceção no worker:[/] {e}")
+            self.app.call_from_thread(self._safe_update_text, f"[red]exceção no thread boot: {e}[/]")
 
-    def _on_text_loaded(self, text: str) -> None:
+    def _safe_update_text(self, text: str) -> None:
         try:
             self.query_one("#modal-services-content", Static).update(text)
         except Exception as e:
-            # se o widget sumiu (modal fechou), só ignora; senão loga via header
             try:
-                self.query_one("#modal-title", Label).update(f"[red]erro ao mostrar conteúdo: {e}[/]")
+                self.query_one("#modal-title", Label).update(f"[red]erro mostrar: {e}[/]")
             except Exception:
                 pass
+
+    def _safe_update_widget(self, widget_cls, method_name: str, *args) -> None:
+        try:
+            widget = self.query_one(widget_cls)
+            getattr(widget, method_name)(*args)
+        except Exception as e:
+            try:
+                self.query_one("#modal-title", Label).update(f"[red]erro {widget_cls.__name__}.{method_name}: {e}[/]")
+            except Exception:
+                pass
+
+
+class SortIndicator(Static):
+    """Toggle visual CPU/RAM dentro do painel Processos. Click alterna."""
+
+    class Toggled(Message):
+        pass
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.tooltip = "click ou s pra trocar"
+
+    def update_sort(self, sort_by: str) -> None:
+        if sort_by == "cpu":
+            self.update("[reverse] CPU [/]  RAM   [dim](click ou s)[/]")
+        else:
+            self.update(" CPU  [reverse] RAM [/]  [dim](click ou s)[/]")
+
+    def on_click(self, event) -> None:
+        self.post_message(self.Toggled())
+
+
+class ModeIndicator(Static):
+    """Toggle visual ativas/todas dentro do painel Sessões. Click alterna."""
+
+    class Toggled(Message):
+        pass
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.tooltip = "click ou a pra trocar"
+
+    def update_mode(self, show_all: bool) -> None:
+        if show_all:
+            self.update(" ativas  [reverse] todas [/]  [dim](click ou a)[/]")
+        else:
+            self.update("[reverse] ativas [/]  todas   [dim](click ou a)[/]")
+
+    def on_click(self, event) -> None:
+        self.post_message(self.Toggled())
 
 
 class ProcessTable(Static):
@@ -1585,6 +1659,22 @@ class MonitorApp(App):
         text-style: bold;
         color: $accent;
     }
+    .section-header {
+        height: 1;
+        width: 100%;
+    }
+    .section-header SectionLabel {
+        width: 1fr;
+    }
+    .section-header SortIndicator,
+    .section-header ModeIndicator {
+        width: auto;
+        height: 1;
+    }
+    .section-header SortIndicator:hover,
+    .section-header ModeIndicator:hover {
+        color: $accent;
+    }
     #session-section {
         height: 1fr;
         border: solid $primary;
@@ -1628,7 +1718,7 @@ class MonitorApp(App):
     show_docker: reactive[bool] = reactive(False)
     show_boot: reactive[bool] = reactive(False)
     proc_sort: reactive[str] = reactive("cpu")
-    left_ratio: reactive[int] = reactive(50)
+    left_ratio: reactive[int] = reactive(70)
 
     TITLE = f"{CONFIG.get('title', 'INEMA Claude Monitor')} {VERSION}"
 
@@ -1643,7 +1733,9 @@ class MonitorApp(App):
                     yield SectionLabel("● Máquina", "system", id="system-label")
                     yield SystemMonitor(id="system-monitor")
                 with Vertical(id="process-section"):
-                    yield SectionLabel("● Processos", "processes", id="process-label")
+                    with Horizontal(classes="section-header"):
+                        yield SectionLabel("● Processos", "processes", id="process-label")
+                        yield SortIndicator(id="sort-indicator")
                     yield ProcessTable(id="process-table-widget")
                 with Vertical(id="docker-section"):
                     yield SectionLabel("● Docker", "docker", id="docker-label")
@@ -1652,7 +1744,9 @@ class MonitorApp(App):
                     yield SectionLabel("● Boot (systemd)", "boot", id="boot-label")
                     yield BootPanel(id="boot-panel")
                 with Vertical(id="session-section"):
-                    yield SectionLabel("● Sessões ativas", "sessions", id="session-label")
+                    with Horizontal(classes="section-header"):
+                        yield SectionLabel("● Sessões", "sessions", id="session-label")
+                        yield ModeIndicator(id="mode-indicator")
                     yield SessionTable(id="session-table-widget")
             with Vertical(id="right-column"):
                 with Vertical(id="chat-section"):
@@ -1664,10 +1758,19 @@ class MonitorApp(App):
         self._last_quota: dict = {}
         self._last_sessions: list = []
         self._last_refresh_at: float = 0
+        # estado inicial dos indicadores
+        self.query_one(SortIndicator).update_sort(self.proc_sort)
+        self.query_one(ModeIndicator).update_mode(self.show_all_sessions)
         self.refresh_data()
         self.set_interval(CONFIG.get("refresh_interval_seconds", 10), self.refresh_data)
-        # ticker de 1s só pra atualizar "atualizado há Xs" no subtitle
         self.set_interval(1.0, self._update_subtitle)
+
+    # — handlers dos indicadores clicáveis ─────────────────────────────────
+    def on_sort_indicator_toggled(self, event: SortIndicator.Toggled) -> None:
+        self.action_toggle_sort()
+
+    def on_mode_indicator_toggled(self, event: ModeIndicator.Toggled) -> None:
+        self.action_toggle_all()
 
     def refresh_data(self) -> None:
         """Dispara coleta em background. Valores antigos ficam na tela
@@ -1733,20 +1836,19 @@ class MonitorApp(App):
         self.query_one(ChatPane).update_context(sessions, self._last_quota or {})
 
         if self.show_processes and procs is not None:
-            n = CONFIG.get("top_processes_n", 10)
             self.query_one(ProcessTable).update_processes(procs)
-            sort_label = "CPU" if self.proc_sort == "cpu" else "RAM"
-            self.query_one("#process-label", Label).update(
-                f"● Processos — top {n} por {sort_label}"
-            )
+        # sincroniza indicadores (sempre)
+        try:
+            self.query_one(SortIndicator).update_sort(self.proc_sort)
+            self.query_one(ModeIndicator).update_mode(self.show_all_sessions)
+        except Exception:
+            pass
 
         if self.show_docker and docker is not None:
             self.query_one(DockerPanel).update_docker(docker)
         if self.show_boot and boot is not None:
             self.query_one(BootPanel).update_boot(boot)
 
-        scope = "todas (vivas + mortas)" if self.show_all_sessions else "ativas"
-        self.query_one("#session-label", Label).update(f"● Sessões {scope}")
         self._update_subtitle()
 
     def _update_subtitle(self) -> None:
@@ -1817,7 +1919,7 @@ class MonitorApp(App):
         self.left_ratio = min(80, self.left_ratio + 5)
 
     def action_reset_split(self) -> None:
-        self.left_ratio = 50
+        self.left_ratio = 70
 
     # ── modal fullscreen ────────────────────────────────────────────────────
     def action_open_modal(self, kind: str) -> None:
