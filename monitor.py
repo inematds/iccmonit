@@ -22,7 +22,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.17.13"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.17.14"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -753,36 +753,50 @@ class PanelOverlay(Vertical):
     def show_kind(self, kind: str, app) -> None:
         """Popula o overlay com o widget do kind solicitado e exibe.
 
+        Idempotente: apertar a mesma tecla 2x não crasha; só re-renderiza.
         IMPORTANTE: body.mount() é async — o widget filho ainda não rodou
         compose/on_mount quando voltamos. Por isso TODA atualização passa
         por call_after_refresh, garantindo que o DataTable interno
         (em SessionTable/ProcessTable) esteja pronto antes do query_one.
         """
+        # se já está mostrando o mesmo kind, evita recriar widgets em race
+        already_same = self.has_class("-active") and getattr(self, "kind", None) == kind
         self.kind = kind
         self.add_class("-active")
-        self.query_one("#overlay-title", Label).update(
-            f"● {self.TITLES.get(kind, '?')} — expandido  [dim](Esc/q fecha · chat à direita continua disponível)[/]"
-        )
+        try:
+            self.query_one("#overlay-title", Label).update(
+                f"● {self.TITLES.get(kind, '?')} — expandido  [dim](Esc/q fecha · chat à direita continua disponível)[/]"
+            )
+        except Exception:
+            pass
         body = self.query_one("#overlay-body", Vertical)
-        for c in list(body.children):
-            c.remove()
+        # remove antigos um a um (evita race com mount async pendente)
+        try:
+            for c in list(body.children):
+                c.remove()
+        except Exception:
+            pass
+        if already_same:
+            # mesmo kind reaberto — só refaz o body, sem precisar fazer nada extra
+            pass
 
+        # IDs evitados nos widgets internos pra não conflitar com remove async
         if kind == "quota":
-            w = QuotaBar(id="overlay-quota")
+            w = QuotaBar()
             body.mount(w)
             quota = getattr(app, "_last_quota", {})
             self.app.call_after_refresh(lambda: w.update_quota(quota))
         elif kind == "system":
-            w = SystemMonitor(id="overlay-system")
+            w = SystemMonitor()
             body.mount(w)
             self.app.call_after_refresh(lambda: w.update("[dim]coletando dados da máquina...[/]"))
             threading.Thread(target=lambda: self._load_system(w), daemon=True).start()
         elif kind == "processes":
-            w = ProcessTable(id="overlay-procs")
+            w = ProcessTable()
             body.mount(w)
             threading.Thread(target=lambda: self._load_processes(w, app), daemon=True).start()
         elif kind == "sessions":
-            w = SessionTable(id="overlay-sess")
+            w = SessionTable()
             body.mount(w)
             enriched = getattr(app, "_last_enriched", None)
             sessions = getattr(app, "_last_sessions", [])
@@ -793,9 +807,9 @@ class PanelOverlay(Vertical):
                     w.update_sessions(sessions)
             self.app.call_after_refresh(_populate_sessions)
         elif kind in ("docker", "boot"):
-            sc = ScrollableContainer(id="overlay-services-sc")
+            sc = ScrollableContainer()
             body.mount(sc)
-            content = Static("[dim]coletando...[/]", id="overlay-services-content")
+            content = Static("[dim]coletando...[/]")
             def _mount_content():
                 sc.mount(content)
                 target = self._load_docker if kind == "docker" else self._load_boot
@@ -1716,17 +1730,17 @@ class MonitorApp(App):
         # ── básicos ──
         Binding("q", "quit", "Sair"),
         Binding("r", "refresh", "↻"),
-        # ── toggle de blocos opcionais ──
-        Binding("p", "toggle_processes", "Procs"),
-        Binding("d", "toggle_docker", "Docker"),
-        Binding("b", "toggle_boot", "Boot"),
-        # ── fullscreen modal ──
-        Binding("1", "open_modal('quota')", "Cota"),
-        Binding("2", "open_modal('system')", "Máq"),
-        Binding("3", "open_modal('processes')", "Proc"),
-        Binding("4", "open_modal('sessions')", "Sess"),
-        Binding("5", "open_modal('docker')", "Dock"),
-        Binding("6", "open_modal('boot')", "Boot"),
+        # ── toggle de blocos inline (mostra/esconde compacto) ──
+        Binding("p", "toggle_processes", "+Proc"),
+        Binding("d", "toggle_docker", "+Dock"),
+        Binding("b", "toggle_boot", "+Boot"),
+        # ── abrir em tela cheia (overlay) ──
+        Binding("1", "open_modal('quota')", "Cota⛶"),
+        Binding("2", "open_modal('system')", "Máq⛶"),
+        Binding("3", "open_modal('processes')", "Proc⛶"),
+        Binding("4", "open_modal('sessions')", "Sess⛶"),
+        Binding("5", "open_modal('docker')", "Dock⛶"),
+        Binding("6", "open_modal('boot')", "Boot⛶"),
         # ── layout ──
         Binding("comma", "shrink_left", "←"),
         Binding("full_stop", "grow_left", "→"),
