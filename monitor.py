@@ -22,7 +22,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.17.11"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.17.12"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -871,133 +871,6 @@ class PanelOverlay(Vertical):
         except Exception as e:
             self.app.call_from_thread(content_widget.update, f"[red]exceção boot: {e}[/]")
 
-    def on_mount(self) -> None:
-        # Sempre dispara a carga depois do render pra garantir que os widgets
-        # estejam mountados quando o thread tentar updatar.
-        self.call_after_refresh(self._kickoff_load)
-
-    def _kickoff_load(self) -> None:
-        app = self.app
-        # popula chat lateral do modal com mesmo contexto
-        try:
-            chat = self.query_one("#modal-chat", ChatPane)
-            chat.update_context(
-                getattr(app, "_last_sessions", []),
-                getattr(app, "_last_quota", {}),
-            )
-            log = chat.query_one("#chat-log", RichLog)
-            kind_label = self.TITLES.get(self.kind, self.kind)
-            log.write(f"[bold magenta]contexto:[/] painel [cyan]{kind_label}[/]")
-            log.write("[dim]pergunte sobre o que você está vendo. /help pra comandos.[/]")
-        except Exception:
-            pass
-        # carga dos dados
-        if self.kind == "quota":
-            self.query_one(QuotaBar).update_quota(getattr(app, "_last_quota", {}))
-        elif self.kind == "sessions":
-            enriched = getattr(app, "_last_enriched", None)
-            if enriched is not None:
-                self.query_one(SessionTable).update_sessions_enriched(enriched)
-            else:
-                sessions = getattr(app, "_last_sessions", [])
-                self.query_one(SessionTable).update_sessions(sessions)
-        elif self.kind == "system":
-            self.query_one(SystemMonitor).update("[dim]coletando dados da máquina...[/]")
-            threading.Thread(target=self._system_thread, daemon=True).start()
-        elif self.kind == "processes":
-            self.query_one(ProcessTable).query_one(DataTable).clear()
-            threading.Thread(target=self._processes_thread, daemon=True).start()
-        elif self.kind == "docker":
-            self.query_one("#modal-services-content", Static).update("[dim]coletando docker ps...[/]")
-            threading.Thread(target=self._docker_thread, daemon=True).start()
-        elif self.kind == "boot":
-            self.query_one("#modal-services-content", Static).update("[dim]coletando systemctl... pode demorar 1-2s[/]")
-            threading.Thread(target=self._boot_thread, daemon=True).start()
-
-    def _system_thread(self) -> None:
-        try:
-            status = get_system_status()
-            self.app.call_from_thread(self._safe_update_widget, SystemMonitor, "update_status", status)
-        except Exception as e:
-            self.app.call_from_thread(self._safe_update_text, f"[red]erro system: {e}[/]")
-
-    def _processes_thread(self) -> None:
-        try:
-            n = CONFIG.get("top_processes_n", 10) * 3
-            sort_by = getattr(self.app, "proc_sort", "cpu")
-            procs = get_top_processes(n=n, sort_by=sort_by)
-            self.app.call_from_thread(self._safe_update_widget, ProcessTable, "update_processes", procs)
-        except Exception as e:
-            self.app.call_from_thread(self._safe_update_text, f"[red]erro processes: {e}[/]")
-
-    def _docker_thread(self) -> None:
-        try:
-            t0 = time.time()
-            docker = get_docker_info()
-            elapsed = time.time() - t0
-            lines: list[str] = []
-            if docker.get("available"):
-                containers = docker["containers"]
-                running = sum(1 for c in containers if c["running"])
-                lines.append(
-                    f"[bold magenta]── Docker — {running}/{len(containers)} ativos ──[/]  [dim](carregou em {elapsed:.2f}s)[/]"
-                )
-                lines.append("[dim]chat: /docker <nome> start|stop|restart|logs[/]")
-                lines.append("")
-                for c in containers:
-                    icon = "[green]✓[/]" if c["running"] else "[red]✗[/]"
-                    ports = (c["ports"] or "-")[:36]
-                    lines.append(
-                        f"  {icon} [bold]{c['name'][:26]:<26}[/] {c['status'][:24]:<24} {ports:<36} [dim]{c['image']}[/]"
-                    )
-            else:
-                lines.append(f"[red]Docker erro:[/] {docker.get('error', 'indisponível')}")
-            self.app.call_from_thread(self._safe_update_text, "\n".join(lines))
-        except Exception as e:
-            self.app.call_from_thread(self._safe_update_text, f"[red]exceção no thread docker: {e}[/]")
-
-    def _boot_thread(self) -> None:
-        try:
-            t0 = time.time()
-            boot = get_boot_services()
-            elapsed = time.time() - t0
-            lines: list[str] = []
-            if boot.get("available"):
-                services = boot["services"]
-                active = sum(1 for s in services if s["active"])
-                lines.append(
-                    f"[bold magenta]── Boot — {active}/{len(services)} rodando ──[/]  [dim](carregou em {elapsed:.2f}s)[/]"
-                )
-                lines.append("")
-                services_sorted = sorted(services, key=lambda s: (not s["active"], s["name"]))
-                for s in services_sorted:
-                    icon = "[green]✓[/]" if s["active"] else "[red]✗[/]"
-                    state_color = "green" if s["active"] else "dim red"
-                    lines.append(f"  {icon} [bold]{s['name'][:38]:<38}[/]  [{state_color}]{s['state']}[/]")
-            else:
-                lines.append(f"[red]systemd erro:[/] {boot.get('error', 'indisponível')}")
-            self.app.call_from_thread(self._safe_update_text, "\n".join(lines))
-        except Exception as e:
-            self.app.call_from_thread(self._safe_update_text, f"[red]exceção no thread boot: {e}[/]")
-
-    def _safe_update_text(self, text: str) -> None:
-        try:
-            self.query_one("#modal-services-content", Static).update(text)
-        except Exception as e:
-            try:
-                self.query_one("#modal-title", Label).update(f"[red]erro mostrar: {e}[/]")
-            except Exception:
-                pass
-
-    def _safe_update_widget(self, widget_cls, method_name: str, *args) -> None:
-        try:
-            widget = self.query_one(widget_cls)
-            getattr(widget, method_name)(*args)
-        except Exception as e:
-            try:
-                self.query_one("#modal-title", Label).update(f"[red]erro {widget_cls.__name__}.{method_name}: {e}[/]")
-            except Exception:
-                pass
 
 
 class SortIndicator(Static):
