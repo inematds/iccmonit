@@ -22,7 +22,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.16.08"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.16.09"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -1695,22 +1695,27 @@ class MonitorApp(App):
     """
 
     BINDINGS = [
+        # ── básicos ──
         Binding("q", "quit", "Sair"),
-        Binding("r", "refresh", "Refresh"),
-        Binding("a", "toggle_all", "Todas/Ativas"),
+        Binding("r", "refresh", "↻"),
+        # ── toggle de blocos opcionais ──
         Binding("p", "toggle_processes", "Procs"),
         Binding("d", "toggle_docker", "Docker"),
         Binding("b", "toggle_boot", "Boot"),
-        Binding("s", "toggle_sort", "Sort CPU/RAM"),
-        Binding("comma", "shrink_left", "← chat"),
-        Binding("full_stop", "grow_left", "→ chat"),
-        Binding("equals_sign", "reset_split", "Reset 50/50"),
+        # ── fullscreen modal ──
         Binding("1", "open_modal('quota')", "Cota"),
-        Binding("2", "open_modal('system')", "Máquina"),
-        Binding("3", "open_modal('processes')", "Procs"),
-        Binding("4", "open_modal('sessions')", "Sessões"),
-        Binding("5", "open_modal('docker')", "Docker"),
+        Binding("2", "open_modal('system')", "Máq"),
+        Binding("3", "open_modal('processes')", "Proc"),
+        Binding("4", "open_modal('sessions')", "Sess"),
+        Binding("5", "open_modal('docker')", "Dock"),
         Binding("6", "open_modal('boot')", "Boot"),
+        # ── layout ──
+        Binding("comma", "shrink_left", "←"),
+        Binding("full_stop", "grow_left", "→"),
+        Binding("equals_sign", "reset_split", "70/30"),
+        # ── internos (já têm widget visual no painel) ──
+        Binding("a", "toggle_all", "Todas/Ativas", show=False),
+        Binding("s", "toggle_sort", "Sort CPU/RAM", show=False),
     ]
 
     show_all_sessions: reactive[bool] = reactive(False)
