@@ -22,7 +22,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.17.14"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.17.15"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -526,6 +526,12 @@ def short_project(cwd: str) -> str:
     return Path(cwd).name[:20] if cwd else "?"
 
 
+def escape_markup(s: str) -> str:
+    """Escapa '[' em strings dinâmicas pra não confundir parser de markup
+    (ex.: docker IPv6 ports vêm como '[::]' e a TUI interpreta como tag)."""
+    return (s or "").replace("[", r"\[")
+
+
 def ago(ts_ms: int) -> str:
     secs = int(time.time() - ts_ms / 1000)
     if secs < 60:
@@ -613,14 +619,16 @@ class DockerPanel(Static):
 
     def update_docker(self, docker: dict) -> None:
         if not docker.get("available"):
-            self.update(f"[dim]Docker: {docker.get('error', 'indisponível')}[/]")
+            self.update(f"[dim]Docker: {escape_markup(docker.get('error', 'indisponível'))}[/]")
             return
         containers = docker["containers"]
         running = [c for c in containers if c["running"]]
         lines = [f"[bold]{len(running)}/{len(containers)} containers ativos[/]  [dim](use 5 ou /docker pra mais)[/]"]
         for c in running[:8]:
-            ports = (c["ports"] or "-")[:35]
-            lines.append(f"  [green]✓[/] {c['name'][:24]:<24} {c['status'][:18]:<18} {ports}")
+            ports = escape_markup((c["ports"] or "-")[:35])
+            name = escape_markup(c["name"][:24])
+            status = escape_markup(c["status"][:18])
+            lines.append(f"  [green]✓[/] {name:<24} {status:<18} {ports}")
         if len(running) > 8:
             lines.append(f"  [dim]... +{len(running)-8} ativos[/]")
         self.update("\n".join(lines))
@@ -807,14 +815,16 @@ class PanelOverlay(Vertical):
                     w.update_sessions(sessions)
             self.app.call_after_refresh(_populate_sessions)
         elif kind in ("docker", "boot"):
-            sc = ScrollableContainer()
-            body.mount(sc)
+            # Static como child do ScrollableContainer na construção —
+            # mount único, sem race entre dois mounts encadeados
             content = Static("[dim]coletando...[/]")
-            def _mount_content():
-                sc.mount(content)
-                target = self._load_docker if kind == "docker" else self._load_boot
-                threading.Thread(target=lambda: target(content), daemon=True).start()
-            self.app.call_after_refresh(_mount_content)
+            sc = ScrollableContainer(content)
+            body.mount(sc)
+            target = self._load_docker if kind == "docker" else self._load_boot
+            # delay 1 frame pra garantir que o Static está mountado
+            self.app.call_after_refresh(
+                lambda: threading.Thread(target=lambda: target(content), daemon=True).start()
+            )
 
     def hide(self) -> None:
         self.remove_class("-active")
@@ -859,19 +869,22 @@ class PanelOverlay(Vertical):
                 lines.append(
                     f"[bold magenta]── Docker — {running}/{len(containers)} ativos ──[/]  [dim](carregou em {elapsed:.2f}s)[/]"
                 )
-                lines.append("[dim]chat à direita: /docker <nome> start|stop|restart|logs[/]")
+                lines.append("[dim]chat: /docker <nome> start|stop|restart|logs[/]")
                 lines.append("")
                 for c in containers:
                     icon = "[green]✓[/]" if c["running"] else "[red]✗[/]"
-                    ports = (c["ports"] or "-")[:36]
+                    ports = escape_markup((c["ports"] or "-")[:36])
+                    name = escape_markup(c["name"][:26])
+                    status = escape_markup(c["status"][:24])
+                    image = escape_markup(c["image"])
                     lines.append(
-                        f"  {icon} [bold]{c['name'][:26]:<26}[/] {c['status'][:24]:<24} {ports:<36} [dim]{c['image']}[/]"
+                        f"  {icon} [bold]{name:<26}[/] {status:<24} {ports:<36} [dim]{image}[/]"
                     )
             else:
-                lines.append(f"[red]Docker erro:[/] {docker.get('error', 'indisponível')}")
-            self.app.call_from_thread(content_widget.update, "\n".join(lines))
+                lines.append(f"[red]Docker erro:[/] {escape_markup(docker.get('error', 'indisponível'))}")
+            self.app.call_from_thread(self._safe_set_content, content_widget, "\n".join(lines))
         except Exception as e:
-            self.app.call_from_thread(content_widget.update, f"[red]exceção docker: {e}[/]")
+            self.app.call_from_thread(self._safe_set_content, content_widget, f"[red]exceção docker: {e}[/]")
 
     def _load_boot(self, content_widget) -> None:
         try:
@@ -892,9 +905,22 @@ class PanelOverlay(Vertical):
                     lines.append(f"  {icon} [bold]{s['name'][:38]:<38}[/]  [{state_color}]{s['state']}[/]")
             else:
                 lines.append(f"[red]systemd erro:[/] {boot.get('error', 'indisponível')}")
-            self.app.call_from_thread(content_widget.update, "\n".join(lines))
+            self.app.call_from_thread(self._safe_set_content, content_widget, "\n".join(lines))
         except Exception as e:
-            self.app.call_from_thread(content_widget.update, f"[red]exceção boot: {e}[/]")
+            self.app.call_from_thread(self._safe_set_content, content_widget, f"[red]exceção boot: {e}[/]")
+
+    def _safe_set_content(self, content_widget, text: str) -> None:
+        """Atualiza o Static; se o widget desapareceu (modal fechou),
+        loga no título do overlay como evidência."""
+        try:
+            content_widget.update(text)
+        except Exception as e:
+            try:
+                self.query_one("#overlay-title", Label).update(
+                    f"[red]erro update content: {e}[/]"
+                )
+            except Exception:
+                pass
 
 
 
@@ -958,11 +984,11 @@ class ProcessTable(Static):
             mem_color = color_for(p["mem_pct"], "system_pct")
             t.add_row(
                 str(p["pid"]),
-                p["user"],
+                escape_markup(p["user"]),
                 colored(f"{p['cpu_pct']:.1f}", cpu_color),
                 colored(f"{p['mem_pct']:.1f}", mem_color),
                 p["etime"],
-                p["cmd"],
+                escape_markup(p["cmd"]),
             )
 
 
@@ -1024,7 +1050,7 @@ class SessionTable(Static):
             cmd_color = color_for(extras["claude_md"], "claude_md_bytes")
             agt_color = color_for(extras["agents"], "agents_per_session")
             mem_str = f"{extras['mem_files']}f/{extras['mem_kb']}k" if extras["mem_files"] else "-"
-            project_label = short_project(s.get("cwd", ""))
+            project_label = escape_markup(short_project(s.get("cwd", "")))
             if not alive:
                 project_label = f"[dim]{project_label}[/]"
             table.add_row(
