@@ -22,7 +22,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.18.15"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.18.16"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -1975,35 +1975,44 @@ class MonitorApp(App):
             except Exception:
                 pass
 
+    ALL_LEFT_SECTIONS = (
+        "quota-section", "system-section",
+        "process-section", "session-section",
+        "docker-section", "boot-section",
+    )
+
+    def _show_overlay(self, kind: str) -> None:
+        """Esconde TODAS as seções do left (com inline display:none, que vence
+        a class CSS) e mostra o overlay no lugar — sem duplicação visual."""
+        left = self.query_one("#left-column")
+        left.add_class("-overlay-on")
+        for sid in self.ALL_LEFT_SECTIONS:
+            try:
+                self.query_one(f"#{sid}").styles.display = "none"
+            except Exception:
+                pass
+        self.query_one(PanelOverlay).show_kind(kind, self)
+
     def action_open_modal(self, kind: str) -> None:
         """Cota/Máquina sempre vão direto pra overlay.
         Slot kinds: 1ª press troca slot · 2ª press na mesma kind abre overlay.
         """
         if kind in ("quota", "system"):
-            left = self.query_one("#left-column")
-            left.add_class("-overlay-on")
-            self.query_one(PanelOverlay).show_kind(kind, self)
+            self._show_overlay(kind)
             return
-        # slot kinds (processes/sessions/docker/boot)
         if kind not in self.SLOT_KINDS:
             return
         overlay = self.query_one(PanelOverlay)
         overlay_open = overlay.has_class("-active")
         if overlay_open:
-            # qualquer tecla no overlay → fecha (volta pro slot)
             self.action_close_overlay()
-            # se a tecla for a mesma do slot atual, só fecha; senão troca slot
             if kind != self.active_slot:
                 self._set_slot(kind)
                 self.refresh_data()
             return
         if self.active_slot == kind:
-            # 2ª press do mesmo kind → overlay
-            left = self.query_one("#left-column")
-            left.add_class("-overlay-on")
-            overlay.show_kind(kind, self)
+            self._show_overlay(kind)
         else:
-            # 1ª press: troca o slot
             self._set_slot(kind)
             self.refresh_data()
 
@@ -2012,6 +2021,10 @@ class MonitorApp(App):
             left = self.query_one("#left-column")
             left.remove_class("-overlay-on")
             self.query_one(PanelOverlay).hide()
+            # restaura: quota+system sempre, slot ativo só
+            self.query_one("#quota-section").styles.display = "block"
+            self.query_one("#system-section").styles.display = "block"
+            self._set_slot(self.active_slot)
         except Exception:
             pass
 
