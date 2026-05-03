@@ -22,7 +22,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.17.15"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.18.15"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -1689,25 +1689,13 @@ class MonitorApp(App):
         padding: 0 1;
         margin-bottom: 1;
     }
-    #process-section {
-        height: 12;
+    /* slot abaixo da Máquina — apenas um aparece por vez via _set_slot */
+    #process-section, #docker-section, #boot-section {
+        height: 1fr;
         border: solid $primary;
         padding: 0 1;
         margin-bottom: 1;
         display: none;
-    }
-    #process-section.-visible {
-        display: block;
-    }
-    #docker-section, #boot-section {
-        height: auto;
-        border: solid $primary;
-        padding: 0 1;
-        margin-bottom: 1;
-        display: none;
-    }
-    #docker-section.-visible, #boot-section.-visible {
-        display: block;
     }
     #quota-label, #system-label, #process-label, #docker-label, #boot-label, #session-label, #chat-label {
         text-style: bold;
@@ -1756,22 +1744,18 @@ class MonitorApp(App):
         # ── básicos ──
         Binding("q", "quit", "Sair"),
         Binding("r", "refresh", "↻"),
-        # ── toggle de blocos inline (mostra/esconde compacto) ──
-        Binding("p", "toggle_processes", "+Proc"),
-        Binding("d", "toggle_docker", "+Dock"),
-        Binding("b", "toggle_boot", "+Boot"),
-        # ── abrir em tela cheia (overlay) ──
-        Binding("1", "open_modal('quota')", "Cota⛶"),
-        Binding("2", "open_modal('system')", "Máq⛶"),
-        Binding("3", "open_modal('processes')", "Proc⛶"),
-        Binding("4", "open_modal('sessions')", "Sess⛶"),
-        Binding("5", "open_modal('docker')", "Dock⛶"),
-        Binding("6", "open_modal('boot')", "Boot⛶"),
-        # ── layout ──
+        # ── slot abaixo da Máquina: 1 press troca · 2nd press abre overlay ──
+        Binding("3", "open_modal('processes')", "Proc"),
+        Binding("4", "open_modal('sessions')", "Sess"),
+        Binding("5", "open_modal('docker')", "Dock"),
+        Binding("6", "open_modal('boot')", "Boot"),
+        # ── layout split ──
         Binding("comma", "shrink_left", "←"),
         Binding("full_stop", "grow_left", "→"),
         Binding("equals_sign", "reset_split", "60/40"),
-        # ── internos (já têm widget visual no painel) ──
+        # ── ocultos do footer (mas funcionam) ──
+        Binding("1", "open_modal('quota')", "Cota", show=False),
+        Binding("2", "open_modal('system')", "Máq", show=False),
         Binding("a", "toggle_all", "Todas/Ativas", show=False),
         Binding("s", "toggle_sort", "Sort CPU/RAM", show=False),
         Binding("escape", "close_overlay", "Fechar overlay", show=False),
@@ -1783,6 +1767,8 @@ class MonitorApp(App):
     show_boot: reactive[bool] = reactive(False)
     proc_sort: reactive[str] = reactive("cpu")
     left_ratio: reactive[int] = reactive(60)
+    # slot abaixo da Máquina: só um de processes/sessions/docker/boot por vez
+    active_slot: reactive[str] = reactive("sessions")
 
     TITLE = f"{CONFIG.get('title', 'INEMA Claude Monitor')} {VERSION}"
 
@@ -1937,32 +1923,7 @@ class MonitorApp(App):
         self.show_all_sessions = not self.show_all_sessions
         self.refresh_data()
 
-    def action_toggle_processes(self) -> None:
-        self.show_processes = not self.show_processes
-        section = self.query_one("#process-section")
-        if self.show_processes:
-            section.add_class("-visible")
-        else:
-            section.remove_class("-visible")
-        self.refresh_data()
-
-    def action_toggle_docker(self) -> None:
-        self.show_docker = not self.show_docker
-        section = self.query_one("#docker-section")
-        if self.show_docker:
-            section.add_class("-visible")
-        else:
-            section.remove_class("-visible")
-        self.refresh_data()
-
-    def action_toggle_boot(self) -> None:
-        self.show_boot = not self.show_boot
-        section = self.query_one("#boot-section")
-        if self.show_boot:
-            section.add_class("-visible")
-        else:
-            section.remove_class("-visible")
-        self.refresh_data()
+    # toggle_* removidos: não há mais inline-on/off independente. Use 3/4/5/6.
 
     def action_toggle_sort(self) -> None:
         if not self.show_processes:
@@ -1990,11 +1951,61 @@ class MonitorApp(App):
         self.left_ratio = 60
         self._update_subtitle()
 
-    # ── overlay no left-column (não cobre o chat à direita) ─────────────────
+    # ── slot único + overlay ────────────────────────────────────────────────
+    SLOT_KINDS = ("processes", "sessions", "docker", "boot")
+    SLOT_SECTIONS = {
+        "processes": "process-section",
+        "sessions": "session-section",
+        "docker": "docker-section",
+        "boot": "boot-section",
+    }
+
+    def _set_slot(self, kind: str) -> None:
+        """Mostra UM dos painéis (Procs/Sess/Docker/Boot) abaixo da Máquina,
+        escondendo os outros. Marca o reactive correspondente pra o worker
+        coletar dados."""
+        self.active_slot = kind
+        self.show_processes = (kind == "processes")
+        self.show_docker = (kind == "docker")
+        self.show_boot = (kind == "boot")
+        for k, sid in self.SLOT_SECTIONS.items():
+            try:
+                section = self.query_one(f"#{sid}")
+                section.styles.display = "block" if k == kind else "none"
+            except Exception:
+                pass
+
     def action_open_modal(self, kind: str) -> None:
-        left = self.query_one("#left-column")
-        left.add_class("-overlay-on")
-        self.query_one(PanelOverlay).show_kind(kind, self)
+        """Cota/Máquina sempre vão direto pra overlay.
+        Slot kinds: 1ª press troca slot · 2ª press na mesma kind abre overlay.
+        """
+        if kind in ("quota", "system"):
+            left = self.query_one("#left-column")
+            left.add_class("-overlay-on")
+            self.query_one(PanelOverlay).show_kind(kind, self)
+            return
+        # slot kinds (processes/sessions/docker/boot)
+        if kind not in self.SLOT_KINDS:
+            return
+        overlay = self.query_one(PanelOverlay)
+        overlay_open = overlay.has_class("-active")
+        if overlay_open:
+            # qualquer tecla no overlay → fecha (volta pro slot)
+            self.action_close_overlay()
+            # se a tecla for a mesma do slot atual, só fecha; senão troca slot
+            if kind != self.active_slot:
+                self._set_slot(kind)
+                self.refresh_data()
+            return
+        if self.active_slot == kind:
+            # 2ª press do mesmo kind → overlay
+            left = self.query_one("#left-column")
+            left.add_class("-overlay-on")
+            overlay.show_kind(kind, self)
+        else:
+            # 1ª press: troca o slot
+            self._set_slot(kind)
+            self.refresh_data()
 
     def action_close_overlay(self) -> None:
         try:
