@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from anthropic import Anthropic
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, ScrollableContainer
@@ -19,7 +20,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.11.04"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.12.04"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -825,11 +826,26 @@ class SessionTable(Static):
             self.post_message(self.SessionSelected(str(event.row_key.value)))
 
     def update_sessions(self, sessions: list[dict]) -> None:
-        table = self.query_one(DataTable)
-        table.clear()
+        """Aceita lista crua — útil quando chamado fora do worker (modal)."""
+        enriched = []
         for s in sessions:
             model, tokens, ctx_pct = get_transcript_usage(s)
             extras = get_session_extras(s)
+            enriched.append({
+                "session": s, "model": model, "tokens": tokens,
+                "ctx_pct": ctx_pct, "extras": extras,
+            })
+        self.update_sessions_enriched(enriched)
+
+    def update_sessions_enriched(self, enriched: list[dict]) -> None:
+        """Aceita dados já pré-computados (transcripts já lidos numa thread)."""
+        table = self.query_one(DataTable)
+        table.clear()
+        for item in enriched:
+            s = item["session"]
+            model = item["model"]
+            ctx_pct = item["ctx_pct"]
+            extras = item["extras"]
             alive = s.get("_alive", True)
             if not alive:
                 status_str = "[dim red]morta[/]"
@@ -1189,52 +1205,77 @@ class ChatPane(Vertical):
             log.write("[red]chat indisponível (sem token oauth)[/]")
             return
 
+        if getattr(self, "_pending", False):
+            log.write("[yellow]aguarde a resposta anterior...[/]")
+            return
+
+        # Render imediato — não trava enquanto a API responde
         log.write(f"[bold cyan]você:[/] {msg}")
+        log.write("[dim italic]aguardando claude...[/]")
         log_chat("user", msg, focus=self._focus_session_id)
         self._history.append({"role": "user", "content": msg})
+        self._pending = True
+        # snapshot dos dados — worker não toca em self._sessions etc.
+        focus_id = self._focus_session_id
+        sessions_snap = list(self._sessions)
+        quota_snap = dict(self._quota)
+        history_snap = list(self._history)
+        self._send_to_api(msg, focus_id, sessions_snap, quota_snap, history_snap)
+
+    @work(thread=True, exclusive=False)
+    def _send_to_api(self, msg: str, focus_id: Optional[str],
+                    sessions: list, quota: dict, history: list) -> None:
+        """Roda numa thread — não bloqueia a TUI."""
         try:
             focus = None
-            if self._focus_session_id:
-                focus = next(
-                    (x for x in self._sessions if x.get("sessionId") == self._focus_session_id),
-                    None,
-                )
+            if focus_id:
+                focus = next((s for s in sessions if s.get("sessionId") == focus_id), None)
             if focus:
-                system = build_session_prompt(focus, self._sessions, self._quota)
+                system = build_session_prompt(focus, sessions, quota)
             else:
-                system = build_system_prompt(self._sessions, self._quota)
+                system = build_system_prompt(sessions, quota)
             chat_cfg = CONFIG.get("chat", {})
             response = self._client.messages.create(
                 model=chat_cfg.get("model", "claude-haiku-4-5-20251001"),
                 max_tokens=chat_cfg.get("max_tokens", 1024),
                 system=system,
-                messages=self._history,
+                messages=history,
             )
             reply = response.content[0].text
-            self._history.append({"role": "assistant", "content": reply})
-            log.write(f"[bold green]claude:[/] {reply}")
-            log_chat("claude", reply, focus=self._focus_session_id)
+            self.app.call_from_thread(self._handle_chat_reply, reply)
         except Exception as e:
             status = getattr(e, "status_code", None)
             body = getattr(e, "body", None)
-            log_chat(
-                "user", msg, focus=self._focus_session_id,
-                error_status=status or 0, error_body=str(body) if body else str(e),
-            )
-            if status == 401:
-                exp = get_oauth_expiry()
-                exp_msg = ""
-                if exp is not None:
-                    exp_msg = f" (token expira em {exp/3600:.1f}h)" if exp > 0 else " (token EXPIRADO)"
-                log.write(f"[red]401 — OAuth não aceito{exp_msg}.[/]")
-                log.write("[dim]Logue de novo no Claude Code (claude logout/login) ou aguarde refresh automático.[/]")
-                log.write(f"[dim]Detalhes em {CHAT_LOG.name} (use /log).[/]")
-            else:
-                log.write(f"[red]erro {status or ''}:[/] {str(e)[:300]}")
-                log.write(f"[dim]Detalhes em {CHAT_LOG.name} (use /log).[/]")
-            # tira a user msg que falhou pra não envenenar o histórico
-            if self._history and self._history[-1].get("role") == "user":
-                self._history.pop()
+            self.app.call_from_thread(self._handle_chat_error, msg, e, status, body)
+
+    def _handle_chat_reply(self, reply: str) -> None:
+        self._pending = False
+        self._history.append({"role": "assistant", "content": reply})
+        log = self.query_one("#chat-log", RichLog)
+        log.write(f"[bold green]claude:[/] {reply}")
+        log_chat("claude", reply, focus=self._focus_session_id)
+
+    def _handle_chat_error(self, msg: str, e: Exception, status, body) -> None:
+        self._pending = False
+        log = self.query_one("#chat-log", RichLog)
+        log_chat(
+            "user", msg, focus=self._focus_session_id,
+            error_status=status or 0, error_body=str(body) if body else str(e),
+        )
+        if status == 401:
+            exp = get_oauth_expiry()
+            exp_msg = ""
+            if exp is not None:
+                exp_msg = f" (token expira em {exp/3600:.1f}h)" if exp > 0 else " (token EXPIRADO)"
+            log.write(f"[red]401 — OAuth não aceito{exp_msg}.[/]")
+            log.write("[dim]Logue de novo no Claude Code (claude logout/login) ou aguarde refresh automático.[/]")
+            log.write(f"[dim]Detalhes em {CHAT_LOG.name} (use /log).[/]")
+        else:
+            log.write(f"[red]erro {status or ''}:[/] {str(e)[:300]}")
+            log.write(f"[dim]Detalhes em {CHAT_LOG.name} (use /log).[/]")
+        # remove user msg que falhou pra não envenenar próximas requests
+        if self._history and self._history[-1].get("role") == "user":
+            self._history.pop()
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -1355,43 +1396,87 @@ class MonitorApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        self._last_quota: dict = {}
+        self._last_sessions: list = []
+        self._last_refresh_at: float = 0
         self.refresh_data()
         self.set_interval(CONFIG.get("refresh_interval_seconds", 10), self.refresh_data)
+        # ticker de 1s só pra atualizar "atualizado há Xs" no subtitle
+        self.set_interval(1.0, self._update_subtitle)
 
     def refresh_data(self) -> None:
+        """Dispara coleta em background. Valores antigos ficam na tela
+        até o worker terminar."""
+        self._refresh_data_worker()
+
+    @work(thread=True, exclusive=True, group="refresh")
+    def _refresh_data_worker(self) -> None:
+        """Pesado (lê transcripts, roda subprocess) — fora da main thread."""
         quota = load_quota()
-        self._last_quota = quota
-        self.query_one(QuotaBar).update_quota(quota)
-        self.query_one(SystemMonitor).update_status(get_system_status())
-
+        sys_status = get_system_status()
         sessions = load_sessions(include_dead=self.show_all_sessions)
-        self._last_sessions = sessions
-        self.query_one(SessionTable).update_sessions(sessions)
-        self.query_one(ChatPane).update_context(sessions, quota)
 
-        # processos só atualizam se o painel está visível (evita ps a cada refresh)
+        enriched = []
+        for s in sessions:
+            model, tokens, ctx_pct = get_transcript_usage(s)
+            extras = get_session_extras(s)
+            enriched.append({
+                "session": s, "model": model, "tokens": tokens,
+                "ctx_pct": ctx_pct, "extras": extras,
+            })
+
+        procs = None
         if self.show_processes:
             n = CONFIG.get("top_processes_n", 10)
             procs = get_top_processes(n=n, sort_by=self.proc_sort)
+
+        services_data = None
+        if self.show_services:
+            services_data = (get_docker_info(), get_boot_services())
+
+        self.app.call_from_thread(
+            self._apply_refresh,
+            quota, sys_status, sessions, enriched, procs, services_data,
+        )
+
+    def _apply_refresh(self, quota, sys_status, sessions, enriched, procs, services_data) -> None:
+        """Roda na main thread — atualiza widgets atomicamente."""
+        self._last_quota = quota
+        self._last_sessions = sessions
+        self._last_refresh_at = time.time()
+
+        self.query_one(QuotaBar).update_quota(quota)
+        self.query_one(SystemMonitor).update_status(sys_status)
+        self.query_one(SessionTable).update_sessions_enriched(enriched)
+        self.query_one(ChatPane).update_context(sessions, quota)
+
+        if self.show_processes and procs is not None:
+            n = CONFIG.get("top_processes_n", 10)
             self.query_one(ProcessTable).update_processes(procs)
             sort_label = "CPU" if self.proc_sort == "cpu" else "RAM"
-            self.query_one("#process-label", Label).update(f"● Processos — top {n} por {sort_label}")
+            self.query_one("#process-label", Label).update(
+                f"● Processos — top {n} por {sort_label}"
+            )
 
-        # serviços (Docker + boot) só rodam quando visível — chamadas pesadas
-        if self.show_services:
-            self.query_one(ServicesPanel).update_services(get_docker_info(), get_boot_services())
+        if self.show_services and services_data is not None:
+            self.query_one(ServicesPanel).update_services(*services_data)
 
-        # label da seção de sessões
         scope = "todas (vivas + mortas)" if self.show_all_sessions else "ativas"
         self.query_one("#session-label", Label).update(f"● Sessões {scope}")
+        self._update_subtitle()
 
-        now = datetime.now().strftime("%H:%M:%S")
-        alive_count = sum(1 for s in sessions if s.get("_alive", True))
+    def _update_subtitle(self) -> None:
+        if not self._last_refresh_at:
+            self.sub_title = "carregando..."
+            return
+        delta = int(time.time() - self._last_refresh_at)
+        sessions = self._last_sessions
+        alive = sum(1 for s in sessions if s.get("_alive", True))
         if self.show_all_sessions:
-            extra = f"{len(sessions)} ({alive_count} vivas)"
+            count = f"{len(sessions)} ({alive} vivas)"
         else:
-            extra = f"{len(sessions)} viva(s)"
-        self.sub_title = f"atualizado {now} · {extra}"
+            count = f"{len(sessions)} viva(s)"
+        self.sub_title = f"atualizado há {delta}s · {count}"
 
     def action_refresh(self) -> None:
         self.refresh_data()

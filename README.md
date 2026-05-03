@@ -9,7 +9,7 @@ Pensado para rodar em um **terminal separado** ao lado das suas sessões Claude 
 - Tamanho do `CLAUDE.md`, da memória do projeto, agentes lançados e skills invocadas
 - Chat com Claude (Haiku por padrão) ciente do estado do painel
 
-Versão atual: **v1.11.03**
+Versão atual: **v1.12.04**
 
 ![iccmonit em execução — painel de cota, sessões e chat focado](docs/img/screenshot.jpg)
 
@@ -125,7 +125,9 @@ Usa o pacote **`textual-serve`** para empacotar a TUI atual num WebSocket + xter
 | `Esc` ou `q` (no modal) | Fecha o modal |
 | `q`   | Sair |
 
-Auto-refresh a cada **10 segundos** por padrão (configurável em `config.json` via `refresh_interval_seconds`).
+Auto-refresh a cada **10 segundos** por padrão (configurável em `config.json` via `refresh_interval_seconds`). A coleta (lê transcripts grandes, roda `nvidia-smi`, `docker ps`, etc.) acontece numa **worker thread** — a TUI não congela e os valores antigos ficam na tela até o novo lote chegar. O subtitle do header mostra **"atualizado há Xs"** ticando a cada segundo.
+
+Chat também é assíncrono: ao enviar, a mensagem aparece na hora com `aguardando claude...` enquanto a API responde em background. Mandar nova mensagem antes da anterior chegar é bloqueado com aviso.
 
 ---
 
