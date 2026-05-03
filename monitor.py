@@ -20,7 +20,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.12.05"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.13.06"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -746,50 +746,93 @@ class PanelModal(ModalScreen):
 
     def on_mount(self) -> None:
         app = self.app
+        # Quota e Sessions: dados já cached no app, render instantâneo
         if self.kind == "quota":
             self.query_one(QuotaBar).update_quota(getattr(app, "_last_quota", {}))
-        elif self.kind == "system":
-            self.query_one(SystemMonitor).update_status(get_system_status())
-        elif self.kind == "processes":
-            n = CONFIG.get("top_processes_n", 10) * 3  # mais linhas em fullscreen
-            sort_by = getattr(app, "proc_sort", "cpu")
-            procs = get_top_processes(n=n, sort_by=sort_by)
-            self.query_one(ProcessTable).update_processes(procs)
         elif self.kind == "sessions":
-            sessions = getattr(app, "_last_sessions", [])
-            self.query_one(SessionTable).update_sessions(sessions)
+            enriched = getattr(app, "_last_enriched", None)
+            if enriched is not None:
+                self.query_one(SessionTable).update_sessions_enriched(enriched)
+            else:
+                sessions = getattr(app, "_last_sessions", [])
+                self.query_one(SessionTable).update_sessions(sessions)
+        # Pesados: placeholder + worker
+        elif self.kind == "system":
+            self.query_one(SystemMonitor).update("[dim]coletando dados da máquina...[/]")
+            self._load_system_async()
+        elif self.kind == "processes":
+            t = self.query_one(ProcessTable).query_one(DataTable)
+            t.clear()
+            self._load_processes_async()
         elif self.kind == "services":
-            docker = get_docker_info()
-            boot = get_boot_services()
-            lines: list[str] = []
-            # Docker
-            if docker.get("available"):
-                containers = docker["containers"]
-                running = sum(1 for c in containers if c["running"])
-                lines.append(f"[bold magenta]── Docker — {running}/{len(containers)} ativos ──[/]")
-                for c in containers:
-                    icon = "[green]✓[/]" if c["running"] else "[red]✗[/]"
-                    ports = (c["ports"] or "-")[:36]
-                    lines.append(
-                        f"  {icon} [bold]{c['name'][:26]:<26}[/] {c['status'][:24]:<24} {ports:<36} [dim]{c['image']}[/]"
-                    )
-            else:
-                lines.append(f"[dim]Docker: {docker.get('error', 'indisponível')}[/]")
-            lines.append("")
-            # Boot
-            if boot.get("available"):
-                services = boot["services"]
-                active = sum(1 for s in services if s["active"])
-                lines.append(f"[bold magenta]── Boot (systemd enabled) — {active}/{len(services)} rodando ──[/]")
-                # ordena: ativos primeiro
-                services_sorted = sorted(services, key=lambda s: (not s["active"], s["name"]))
-                for s in services_sorted:
-                    icon = "[green]✓[/]" if s["active"] else "[red]✗[/]"
-                    state_color = "green" if s["active"] else "dim red"
-                    lines.append(f"  {icon} [bold]{s['name'][:38]:<38}[/]  [{state_color}]{s['state']}[/]")
-            else:
-                lines.append(f"[dim]systemd: {boot.get('error', 'indisponível')}[/]")
-            self.query_one("#modal-services-content", Static).update("\n".join(lines))
+            self.query_one("#modal-services-content", Static).update(
+                "[dim]coletando docker ps + systemctl... aguarde 1-2s[/]"
+            )
+            self._load_services_async()
+
+    @work(thread=True, exclusive=True, group="modal-system")
+    def _load_system_async(self) -> None:
+        status = get_system_status()
+        self.app.call_from_thread(self._on_system_loaded, status)
+
+    def _on_system_loaded(self, status) -> None:
+        try:
+            self.query_one(SystemMonitor).update_status(status)
+        except Exception:
+            pass  # modal pode ter sido fechado
+
+    @work(thread=True, exclusive=True, group="modal-procs")
+    def _load_processes_async(self) -> None:
+        n = CONFIG.get("top_processes_n", 10) * 3
+        sort_by = getattr(self.app, "proc_sort", "cpu")
+        procs = get_top_processes(n=n, sort_by=sort_by)
+        self.app.call_from_thread(self._on_procs_loaded, procs)
+
+    def _on_procs_loaded(self, procs) -> None:
+        try:
+            self.query_one(ProcessTable).update_processes(procs)
+        except Exception:
+            pass
+
+    @work(thread=True, exclusive=True, group="modal-services")
+    def _load_services_async(self) -> None:
+        docker = get_docker_info()
+        boot = get_boot_services()
+        # build lines na thread (string ops baratas, mas evita main thread)
+        lines: list[str] = []
+        if docker.get("available"):
+            containers = docker["containers"]
+            running = sum(1 for c in containers if c["running"])
+            lines.append(f"[bold magenta]── Docker — {running}/{len(containers)} ativos ──[/]")
+            lines.append("[dim]use no chat: /docker <nome> start|stop|restart|logs[/]")
+            for c in containers:
+                icon = "[green]✓[/]" if c["running"] else "[red]✗[/]"
+                ports = (c["ports"] or "-")[:36]
+                lines.append(
+                    f"  {icon} [bold]{c['name'][:26]:<26}[/] {c['status'][:24]:<24} {ports:<36} [dim]{c['image']}[/]"
+                )
+        else:
+            lines.append(f"[dim]Docker: {docker.get('error', 'indisponível')}[/]")
+        lines.append("")
+        if boot.get("available"):
+            services = boot["services"]
+            active = sum(1 for s in services if s["active"])
+            lines.append(f"[bold magenta]── Boot (systemd enabled) — {active}/{len(services)} rodando ──[/]")
+            services_sorted = sorted(services, key=lambda s: (not s["active"], s["name"]))
+            for s in services_sorted:
+                icon = "[green]✓[/]" if s["active"] else "[red]✗[/]"
+                state_color = "green" if s["active"] else "dim red"
+                lines.append(f"  {icon} [bold]{s['name'][:38]:<38}[/]  [{state_color}]{s['state']}[/]")
+        else:
+            lines.append(f"[dim]systemd: {boot.get('error', 'indisponível')}[/]")
+        text = "\n".join(lines)
+        self.app.call_from_thread(self._on_services_loaded, text)
+
+    def _on_services_loaded(self, text: str) -> None:
+        try:
+            self.query_one("#modal-services-content", Static).update(text)
+        except Exception:
+            pass
 
 
 class ProcessTable(Static):
@@ -1144,6 +1187,7 @@ class ChatPane(Vertical):
             log.write("  [cyan]/skills[/]  recomenda qual sessão deve rodar qual skill")
             log.write("            [dim](session-statusline · memory-audit · session-handoff)[/]")
             log.write("  [cyan]/clear[/]   volta ao modo geral (limpa foco e histórico)")
+            log.write("  [cyan]/docker[/]  lista containers · /docker <nome> start|stop|restart|logs")
             log.write("  [cyan]/log[/]     mostra últimas linhas do log de chat")
             log.write("  [cyan]/where[/]   mostra path do log e do config")
             log.write("  [dim]/fork[/]    [dim]V2 — abrir nova sessão Claude Code continuando a focada (não disponível)[/]")
@@ -1199,8 +1243,98 @@ class ChatPane(Vertical):
             log.write("[yellow]/fork[/] ainda não implementado — está no roadmap V2.")
             log.write("[dim]A ideia: abrir 'claude --resume <sessionId>' num subprocess paralelo,[/]")
             log.write("[dim]forkando a conversa selecionada num novo terminal.[/]")
+        elif cmd.startswith("/docker"):
+            self._handle_docker(cmd, log)
         else:
             log.write(f"[red]comando desconhecido:[/] {cmd}  [dim](tente /help)[/]")
+
+    def _handle_docker(self, cmd: str, log: RichLog) -> None:
+        parts = cmd.split()
+        # /docker = lista compacta dos rodando
+        if len(parts) == 1:
+            log.write("[bold]listando containers...[/]")
+            self._docker_list_async()
+            return
+        # /docker <nome> <action>
+        if len(parts) >= 3:
+            name = parts[1]
+            action = parts[2]
+            if action in ("start", "stop", "restart", "logs"):
+                log.write(f"[dim]docker {action} {name}...[/]")
+                self._docker_action_async(name, action)
+                return
+        log.write("[yellow]uso:[/]")
+        log.write("  [cyan]/docker[/]                       lista containers rodando")
+        log.write("  [cyan]/docker <nome> start[/]          inicia container")
+        log.write("  [cyan]/docker <nome> stop[/]           para container")
+        log.write("  [cyan]/docker <nome> restart[/]        reinicia container")
+        log.write("  [cyan]/docker <nome> logs[/]           últimas 30 linhas")
+
+    @work(thread=True, exclusive=False)
+    def _docker_list_async(self) -> None:
+        try:
+            r = subprocess.run(
+                ["docker", "ps", "--format", "{{.Names}}|{{.Status}}|{{.Ports}}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            ok = r.returncode == 0
+            out = r.stdout if ok else r.stderr
+            self.app.call_from_thread(self._on_docker_list, ok, out)
+        except FileNotFoundError:
+            self.app.call_from_thread(self._on_docker_list, False, "docker não instalado")
+        except Exception as e:
+            self.app.call_from_thread(self._on_docker_list, False, str(e))
+
+    def _on_docker_list(self, ok: bool, out: str) -> None:
+        log = self.query_one("#chat-log", RichLog)
+        if not ok:
+            log.write(f"[red]erro:[/] {out[:200]}")
+            return
+        lines = out.strip().splitlines()
+        if not lines:
+            log.write("[dim]nenhum container rodando[/]")
+            return
+        for ln in lines:
+            parts = ln.split("|", 2)
+            if len(parts) < 3:
+                continue
+            name, status, ports = parts
+            log.write(f"  [green]✓[/] [bold]{name[:28]:<28}[/] {status[:22]:<22} [dim]{ports[:40]}[/]")
+
+    @work(thread=True, exclusive=False)
+    def _docker_action_async(self, name: str, action: str) -> None:
+        try:
+            if action == "logs":
+                r = subprocess.run(
+                    ["docker", "logs", "--tail", "30", name],
+                    capture_output=True, text=True, timeout=10,
+                )
+            else:
+                r = subprocess.run(
+                    ["docker", action, name],
+                    capture_output=True, text=True, timeout=20,
+                )
+            ok = r.returncode == 0
+            out = (r.stdout + r.stderr).strip()
+            self.app.call_from_thread(self._on_docker_action, name, action, ok, out)
+        except FileNotFoundError:
+            self.app.call_from_thread(self._on_docker_action, name, action, False, "docker não instalado")
+        except subprocess.TimeoutExpired:
+            self.app.call_from_thread(self._on_docker_action, name, action, False, "timeout")
+        except Exception as e:
+            self.app.call_from_thread(self._on_docker_action, name, action, False, str(e))
+
+    def _on_docker_action(self, name: str, action: str, ok: bool, out: str) -> None:
+        log = self.query_one("#chat-log", RichLog)
+        icon = "[green]✓[/]" if ok else "[red]✗[/]"
+        log.write(f"{icon} [bold]docker {action} {name}[/]")
+        if out:
+            # logs pode ser longo — limita a 60 linhas no chat
+            for ln in out.splitlines()[:60]:
+                log.write(f"  [dim]{ln[:200]}[/]")
+            extra = len(out.splitlines()) - 60
+            if extra > 0:
+                log.write(f"  [dim italic]... +{extra} linha(s) (rode no terminal pra ver tudo)[/]")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         msg = event.value.strip()
@@ -1460,6 +1594,7 @@ class MonitorApp(App):
         if quota:
             self._last_quota = quota
         self._last_sessions = sessions
+        self._last_enriched = enriched
         self._last_refresh_at = time.time()
 
         self.query_one(QuotaBar).update_quota(self._last_quota or {}, cache_age=quota_age)

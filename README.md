@@ -9,7 +9,7 @@ Pensado para rodar em um **terminal separado** ao lado das suas sessões Claude 
 - Tamanho do `CLAUDE.md`, da memória do projeto, agentes lançados e skills invocadas
 - Chat com Claude (Haiku por padrão) ciente do estado do painel
 
-Versão atual: **v1.12.04**
+Versão atual: **v1.13.06**
 
 ![iccmonit em execução — painel de cota, sessões e chat focado](docs/img/screenshot.jpg)
 
@@ -255,6 +255,7 @@ Chat embutido com Claude com **dois modos**:
 | `/clear`  | Volta ao modo geral (limpa o foco e o histórico) |
 | `/log`    | Mostra as últimas 20 linhas do log de chat |
 | `/where`  | Imprime os caminhos do log, config e diretório de projects |
+| `/docker` | sem args: lista containers rodando · `/docker <nome> start\|stop\|restart\|logs` age direto |
 | `/fork`   | *(roadmap V2)* — abrir nova sessão Claude Code continuando a focada |
 
 Trocar de foco também limpa o histórico do chat — pra não misturar conversas.
