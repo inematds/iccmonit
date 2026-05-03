@@ -22,7 +22,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.17.12"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.17.13"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -751,25 +751,31 @@ class PanelOverlay(Vertical):
         yield Vertical(id="overlay-body")
 
     def show_kind(self, kind: str, app) -> None:
-        """Popula o overlay com o widget do kind solicitado e exibe."""
+        """Popula o overlay com o widget do kind solicitado e exibe.
+
+        IMPORTANTE: body.mount() é async — o widget filho ainda não rodou
+        compose/on_mount quando voltamos. Por isso TODA atualização passa
+        por call_after_refresh, garantindo que o DataTable interno
+        (em SessionTable/ProcessTable) esteja pronto antes do query_one.
+        """
         self.kind = kind
         self.add_class("-active")
         self.query_one("#overlay-title", Label).update(
             f"● {self.TITLES.get(kind, '?')} — expandido  [dim](Esc/q fecha · chat à direita continua disponível)[/]"
         )
         body = self.query_one("#overlay-body", Vertical)
-        # limpa anteriores
         for c in list(body.children):
             c.remove()
-        # monta o widget apropriado
+
         if kind == "quota":
             w = QuotaBar(id="overlay-quota")
             body.mount(w)
-            w.update_quota(getattr(app, "_last_quota", {}))
+            quota = getattr(app, "_last_quota", {})
+            self.app.call_after_refresh(lambda: w.update_quota(quota))
         elif kind == "system":
             w = SystemMonitor(id="overlay-system")
             body.mount(w)
-            w.update("[dim]coletando dados da máquina...[/]")
+            self.app.call_after_refresh(lambda: w.update("[dim]coletando dados da máquina...[/]"))
             threading.Thread(target=lambda: self._load_system(w), daemon=True).start()
         elif kind == "processes":
             w = ProcessTable(id="overlay-procs")
@@ -779,17 +785,22 @@ class PanelOverlay(Vertical):
             w = SessionTable(id="overlay-sess")
             body.mount(w)
             enriched = getattr(app, "_last_enriched", None)
-            if enriched is not None:
-                w.update_sessions_enriched(enriched)
-            else:
-                w.update_sessions(getattr(app, "_last_sessions", []))
+            sessions = getattr(app, "_last_sessions", [])
+            def _populate_sessions():
+                if enriched is not None:
+                    w.update_sessions_enriched(enriched)
+                else:
+                    w.update_sessions(sessions)
+            self.app.call_after_refresh(_populate_sessions)
         elif kind in ("docker", "boot"):
-            sc = ScrollableContainer()
+            sc = ScrollableContainer(id="overlay-services-sc")
             body.mount(sc)
             content = Static("[dim]coletando...[/]", id="overlay-services-content")
-            sc.mount(content)
-            target = self._load_docker if kind == "docker" else self._load_boot
-            threading.Thread(target=lambda: target(content), daemon=True).start()
+            def _mount_content():
+                sc.mount(content)
+                target = self._load_docker if kind == "docker" else self._load_boot
+                threading.Thread(target=lambda: target(content), daemon=True).start()
+            self.app.call_after_refresh(_mount_content)
 
     def hide(self) -> None:
         self.remove_class("-active")
@@ -925,6 +936,8 @@ class ProcessTable(Static):
 
     def update_processes(self, procs: list[dict]) -> None:
         t = self.query_one(DataTable)
+        if not t.columns:
+            t.add_columns("PID", "User", "CPU%", "RAM%", "Tempo", "Comando")
         t.clear()
         for p in procs:
             cpu_color = color_for(p["cpu_pct"], "system_pct")
@@ -973,6 +986,13 @@ class SessionTable(Static):
     def update_sessions_enriched(self, enriched: list[dict]) -> None:
         """Aceita dados já pré-computados (transcripts já lidos numa thread)."""
         table = self.query_one(DataTable)
+        # belt-and-suspenders: garante colunas (caso on_mount não tenha
+        # rodado ainda — overlay monta widget e popula no mesmo tick)
+        if not table.columns:
+            table.add_columns(
+                "Projeto", "Status", "Modelo", "Ctx%", "CLAUDE.md",
+                "Mem", "Agts", "Skls", "Update",
+            )
         table.clear()
         for item in enriched:
             s = item["session"]
