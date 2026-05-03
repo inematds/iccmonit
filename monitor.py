@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Claude Code Session Monitor — V1"""
 
+import concurrent.futures
 import json
 import os
 import re
@@ -20,7 +21,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.13.06"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.14.06"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
@@ -606,30 +607,39 @@ class SystemMonitor(Static):
         self.update("\n".join(lines))
 
 
-class ServicesPanel(Static):
-    """Resumo compacto de Docker + systemd boot. Modal '5' mostra tudo."""
+class DockerPanel(Static):
+    """Compacto: containers Docker rodando. Modal '5' mostra tudo."""
 
-    def update_services(self, docker: dict, boot: dict) -> None:
-        lines: list[str] = []
-        # Docker
-        if docker.get("available"):
-            containers = docker["containers"]
-            running = [c for c in containers if c["running"]]
-            lines.append(f"[bold]Docker[/]   {len(running)}/{len(containers)} containers ativos")
-            for c in running[:6]:
-                ports = (c["ports"] or "-")[:35]
-                lines.append(f"  [green]✓[/] {c['name'][:24]:<24} {c['status'][:18]:<18} {ports}")
-            if len(running) > 6:
-                lines.append(f"  [dim]... +{len(running)-6} ativos · use [cyan]5[/dim] pra ver tudo[dim] (incl. parados)[/]")
-        else:
-            lines.append(f"[bold]Docker[/]   [dim]{docker.get('error', 'indisponível')}[/]")
-        # Boot — só sumário inline, lista completa no modal
-        if boot.get("available"):
-            services = boot["services"]
-            active = sum(1 for s in services if s["active"])
-            lines.append(f"[bold]Boot[/]     {active}/{len(services)} systemd .service habilitados rodando  [dim](abra modal pra ver lista)[/]")
-        else:
-            lines.append(f"[bold]Boot[/]     [dim]{boot.get('error', 'indisponível')}[/]")
+    def update_docker(self, docker: dict) -> None:
+        if not docker.get("available"):
+            self.update(f"[dim]Docker: {docker.get('error', 'indisponível')}[/]")
+            return
+        containers = docker["containers"]
+        running = [c for c in containers if c["running"]]
+        lines = [f"[bold]{len(running)}/{len(containers)} containers ativos[/]  [dim](use 5 ou /docker pra mais)[/]"]
+        for c in running[:8]:
+            ports = (c["ports"] or "-")[:35]
+            lines.append(f"  [green]✓[/] {c['name'][:24]:<24} {c['status'][:18]:<18} {ports}")
+        if len(running) > 8:
+            lines.append(f"  [dim]... +{len(running)-8} ativos[/]")
+        self.update("\n".join(lines))
+
+
+class BootPanel(Static):
+    """Compacto: services systemd habilitados no boot. Modal '6' mostra tudo."""
+
+    def update_boot(self, boot: dict) -> None:
+        if not boot.get("available"):
+            self.update(f"[dim]systemd: {boot.get('error', 'indisponível')}[/]")
+            return
+        services = boot["services"]
+        active = sum(1 for s in services if s["active"])
+        active_services = [s for s in services if s["active"]]
+        lines = [f"[bold]{active}/{len(services)} habilitados rodando[/]  [dim](use 6 pra lista completa)[/]"]
+        for s in active_services[:8]:
+            lines.append(f"  [green]✓[/] {s['name'][:38]}")
+        if len(active_services) > 8:
+            lines.append(f"  [dim]... +{len(active_services)-8} ativos[/]")
         self.update("\n".join(lines))
 
 
@@ -720,7 +730,8 @@ class PanelModal(ModalScreen):
         "system": "Máquina",
         "processes": "Processos",
         "sessions": "Sessões",
-        "services": "Serviços (Docker + Boot)",
+        "docker": "Docker — todos os containers",
+        "boot": "Boot — systemd enabled",
     }
 
     def __init__(self, kind: str) -> None:
@@ -741,7 +752,7 @@ class PanelModal(ModalScreen):
                 yield ProcessTable(id="modal-procs")
             elif self.kind == "sessions":
                 yield SessionTable(id="modal-sess")
-            elif self.kind == "services":
+            elif self.kind in ("docker", "boot"):
                 yield ScrollableContainer(Static(id="modal-services-content"))
 
     def on_mount(self) -> None:
@@ -764,11 +775,12 @@ class PanelModal(ModalScreen):
             t = self.query_one(ProcessTable).query_one(DataTable)
             t.clear()
             self._load_processes_async()
-        elif self.kind == "services":
-            self.query_one("#modal-services-content", Static).update(
-                "[dim]coletando docker ps + systemctl... aguarde 1-2s[/]"
-            )
-            self._load_services_async()
+        elif self.kind == "docker":
+            self.query_one("#modal-services-content", Static).update("[dim]coletando docker ps...[/]")
+            self._load_docker_async()
+        elif self.kind == "boot":
+            self.query_one("#modal-services-content", Static).update("[dim]coletando systemctl...[/]")
+            self._load_boot_async()
 
     @work(thread=True, exclusive=True, group="modal-system")
     def _load_system_async(self) -> None:
@@ -794,17 +806,16 @@ class PanelModal(ModalScreen):
         except Exception:
             pass
 
-    @work(thread=True, exclusive=True, group="modal-services")
-    def _load_services_async(self) -> None:
+    @work(thread=True, exclusive=True, group="modal-docker")
+    def _load_docker_async(self) -> None:
         docker = get_docker_info()
-        boot = get_boot_services()
-        # build lines na thread (string ops baratas, mas evita main thread)
         lines: list[str] = []
         if docker.get("available"):
             containers = docker["containers"]
             running = sum(1 for c in containers if c["running"])
             lines.append(f"[bold magenta]── Docker — {running}/{len(containers)} ativos ──[/]")
-            lines.append("[dim]use no chat: /docker <nome> start|stop|restart|logs[/]")
+            lines.append("[dim]chat: /docker <nome> start|stop|restart|logs[/]")
+            lines.append("")
             for c in containers:
                 icon = "[green]✓[/]" if c["running"] else "[red]✗[/]"
                 ports = (c["ports"] or "-")[:36]
@@ -813,11 +824,17 @@ class PanelModal(ModalScreen):
                 )
         else:
             lines.append(f"[dim]Docker: {docker.get('error', 'indisponível')}[/]")
-        lines.append("")
+        self.app.call_from_thread(self._on_text_loaded, "\n".join(lines))
+
+    @work(thread=True, exclusive=True, group="modal-boot")
+    def _load_boot_async(self) -> None:
+        boot = get_boot_services()
+        lines: list[str] = []
         if boot.get("available"):
             services = boot["services"]
             active = sum(1 for s in services if s["active"])
             lines.append(f"[bold magenta]── Boot (systemd enabled) — {active}/{len(services)} rodando ──[/]")
+            lines.append("")
             services_sorted = sorted(services, key=lambda s: (not s["active"], s["name"]))
             for s in services_sorted:
                 icon = "[green]✓[/]" if s["active"] else "[red]✗[/]"
@@ -825,10 +842,9 @@ class PanelModal(ModalScreen):
                 lines.append(f"  {icon} [bold]{s['name'][:38]:<38}[/]  [{state_color}]{s['state']}[/]")
         else:
             lines.append(f"[dim]systemd: {boot.get('error', 'indisponível')}[/]")
-        text = "\n".join(lines)
-        self.app.call_from_thread(self._on_services_loaded, text)
+        self.app.call_from_thread(self._on_text_loaded, "\n".join(lines))
 
-    def _on_services_loaded(self, text: str) -> None:
+    def _on_text_loaded(self, text: str) -> None:
         try:
             self.query_one("#modal-services-content", Static).update(text)
         except Exception:
@@ -1174,10 +1190,11 @@ class ChatPane(Vertical):
             log.write("  [cyan]r[/]            refresh manual do painel")
             log.write("  [cyan]a[/]            sessões ativas ↔ todas (vivas + mortas)")
             log.write("  [cyan]p[/]            liga/desliga painel Processos")
-            log.write("  [cyan]v[/]            liga/desliga painel Serviços (Docker + boot)")
+            log.write("  [cyan]d[/]            liga/desliga painel Docker")
+            log.write("  [cyan]b[/]            liga/desliga painel Boot (systemd)")
             log.write("  [cyan]s[/]            sort processos: CPU% ↔ RAM%")
             log.write("  [cyan], . =[/]        redimensionar split")
-            log.write("  [cyan]1 2 3 4 5[/]    fullscreen: Cota / Máquina / Procs / Sessões / Serviços")
+            log.write("  [cyan]1-6[/]          fullscreen: Cota / Máquina / Procs / Sessões / Docker / Boot")
             log.write("  [cyan]click no título[/]   também abre fullscreen")
             log.write("  [cyan]q[/]            sair")
             log.write("")
@@ -1188,6 +1205,7 @@ class ChatPane(Vertical):
             log.write("            [dim](session-statusline · memory-audit · session-handoff)[/]")
             log.write("  [cyan]/clear[/]   volta ao modo geral (limpa foco e histórico)")
             log.write("  [cyan]/docker[/]  lista containers · /docker <nome> start|stop|restart|logs")
+            log.write("  [cyan]/codex[/]   probe rate limit OpenAI (precisa OPENAI_API_KEY ou ~/.codex/auth.json)")
             log.write("  [cyan]/log[/]     mostra últimas linhas do log de chat")
             log.write("  [cyan]/where[/]   mostra path do log e do config")
             log.write("  [dim]/fork[/]    [dim]V2 — abrir nova sessão Claude Code continuando a focada (não disponível)[/]")
@@ -1245,6 +1263,9 @@ class ChatPane(Vertical):
             log.write("[dim]forkando a conversa selecionada num novo terminal.[/]")
         elif cmd.startswith("/docker"):
             self._handle_docker(cmd, log)
+        elif cmd == "/codex":
+            log.write("[dim]consultando OpenAI rate limits...[/]")
+            self._codex_quota_async()
         else:
             log.write(f"[red]comando desconhecido:[/] {cmd}  [dim](tente /help)[/]")
 
@@ -1323,6 +1344,73 @@ class ChatPane(Vertical):
             self.app.call_from_thread(self._on_docker_action, name, action, False, "timeout")
         except Exception as e:
             self.app.call_from_thread(self._on_docker_action, name, action, False, str(e))
+
+    @work(thread=True, exclusive=False)
+    def _codex_quota_async(self) -> None:
+        """Probe OpenAI: faz GET leve em /v1/models e lê headers de rate limit.
+
+        Procura API key em: $OPENAI_API_KEY → ~/.codex/auth.json (codex-cli da OpenAI).
+        OpenAI não expõe 'cota mensal restante' por API; só rate limits da janela atual.
+        """
+        try:
+            import urllib.request
+            key = os.environ.get("OPENAI_API_KEY")
+            source = "OPENAI_API_KEY"
+            if not key:
+                # tenta codex-cli
+                codex_auth = Path.home() / ".codex" / "auth.json"
+                if codex_auth.exists():
+                    try:
+                        d = json.loads(codex_auth.read_text())
+                        key = d.get("OPENAI_API_KEY") or d.get("api_key")
+                        if key:
+                            source = str(codex_auth)
+                    except Exception:
+                        pass
+            if not key:
+                self.app.call_from_thread(
+                    self._on_codex_result,
+                    False, None, None,
+                    "Sem API key — exporte OPENAI_API_KEY ou logue no codex (cria ~/.codex/auth.json)",
+                )
+                return
+            req = urllib.request.Request(
+                "https://api.openai.com/v1/models",
+                headers={"Authorization": f"Bearer {key}"},
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                headers = dict(resp.headers)
+                # pega só o primeiro modelo da lista pra não pesar
+                _body = resp.read(2048)
+            self.app.call_from_thread(self._on_codex_result, True, headers, source, None)
+        except Exception as e:
+            self.app.call_from_thread(self._on_codex_result, False, None, None, str(e)[:200])
+
+    def _on_codex_result(self, ok, headers, source, err) -> None:
+        log = self.query_one("#chat-log", RichLog)
+        if not ok:
+            log.write(f"[red]codex erro:[/] {err}")
+            log.write("[dim]OpenAI não tem 'cota mensal' por API — só rate limit da janela atual e[/]")
+            log.write("[dim]uso histórico em /v1/usage. 'Saldo' real só no dashboard web.[/]")
+            return
+        log.write(f"[bold]OpenAI rate limits[/]  [dim](key: {source})[/]")
+        keys = [
+            ("x-ratelimit-limit-requests", "req limit"),
+            ("x-ratelimit-remaining-requests", "req restantes"),
+            ("x-ratelimit-reset-requests", "req reset"),
+            ("x-ratelimit-limit-tokens", "tok limit"),
+            ("x-ratelimit-remaining-tokens", "tok restantes"),
+            ("x-ratelimit-reset-tokens", "tok reset"),
+        ]
+        any_found = False
+        for k, label in keys:
+            v = headers.get(k) or headers.get(k.title())
+            if v is not None:
+                log.write(f"  [cyan]{label:<14}[/] {v}")
+                any_found = True
+        if not any_found:
+            log.write("[dim]nenhum header de rate limit retornado (esquema mudou?)[/]")
+        log.write("[dim](OpenAI não expõe 'cota mensal restante' por API — só dashboard.)[/]")
 
     def _on_docker_action(self, name: str, action: str, ok: bool, out: str) -> None:
         log = self.query_one("#chat-log", RichLog)
@@ -1458,17 +1546,17 @@ class MonitorApp(App):
     #process-section.-visible {
         display: block;
     }
-    #services-section {
+    #docker-section, #boot-section {
         height: auto;
         border: solid $primary;
         padding: 0 1;
         margin-bottom: 1;
         display: none;
     }
-    #services-section.-visible {
+    #docker-section.-visible, #boot-section.-visible {
         display: block;
     }
-    #quota-label, #system-label, #process-label, #services-label, #session-label, #chat-label {
+    #quota-label, #system-label, #process-label, #docker-label, #boot-label, #session-label, #chat-label {
         text-style: bold;
         color: $accent;
     }
@@ -1495,8 +1583,9 @@ class MonitorApp(App):
         Binding("q", "quit", "Sair"),
         Binding("r", "refresh", "Refresh"),
         Binding("a", "toggle_all", "Todas/Ativas"),
-        Binding("p", "toggle_processes", "Processos"),
-        Binding("v", "toggle_services", "Serviços"),
+        Binding("p", "toggle_processes", "Procs"),
+        Binding("d", "toggle_docker", "Docker"),
+        Binding("b", "toggle_boot", "Boot"),
         Binding("s", "toggle_sort", "Sort CPU/RAM"),
         Binding("comma", "shrink_left", "← chat"),
         Binding("full_stop", "grow_left", "→ chat"),
@@ -1505,12 +1594,14 @@ class MonitorApp(App):
         Binding("2", "open_modal('system')", "Máquina"),
         Binding("3", "open_modal('processes')", "Procs"),
         Binding("4", "open_modal('sessions')", "Sessões"),
-        Binding("5", "open_modal('services')", "Serviços"),
+        Binding("5", "open_modal('docker')", "Docker"),
+        Binding("6", "open_modal('boot')", "Boot"),
     ]
 
     show_all_sessions: reactive[bool] = reactive(False)
     show_processes: reactive[bool] = reactive(False)
-    show_services: reactive[bool] = reactive(False)
+    show_docker: reactive[bool] = reactive(False)
+    show_boot: reactive[bool] = reactive(False)
     proc_sort: reactive[str] = reactive("cpu")
     left_ratio: reactive[int] = reactive(50)
 
@@ -1529,9 +1620,12 @@ class MonitorApp(App):
                 with Vertical(id="process-section"):
                     yield SectionLabel("● Processos", "processes", id="process-label")
                     yield ProcessTable(id="process-table-widget")
-                with Vertical(id="services-section"):
-                    yield SectionLabel("● Serviços", "services", id="services-label")
-                    yield ServicesPanel(id="services-panel")
+                with Vertical(id="docker-section"):
+                    yield SectionLabel("● Docker", "docker", id="docker-label")
+                    yield DockerPanel(id="docker-panel")
+                with Vertical(id="boot-section"):
+                    yield SectionLabel("● Boot (systemd)", "boot", id="boot-label")
+                    yield BootPanel(id="boot-panel")
                 with Vertical(id="session-section"):
                     yield SectionLabel("● Sessões ativas", "sessions", id="session-label")
                     yield SessionTable(id="session-table-widget")
@@ -1557,10 +1651,28 @@ class MonitorApp(App):
 
     @work(thread=True, exclusive=True, group="refresh")
     def _refresh_data_worker(self) -> None:
-        """Pesado (lê transcripts, roda subprocess) — fora da main thread."""
+        """Pesado (lê transcripts, roda subprocess) — fora da main thread.
+
+        Paraleliza coleta de system/docker/boot/procs em ThreadPoolExecutor
+        — antes era em série (~3-4s); agora roda em ~o tempo do mais lento.
+        """
         quota, quota_age = load_quota()
-        sys_status = get_system_status()
-        sessions = load_sessions(include_dead=self.show_all_sessions)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+            f_sys = ex.submit(get_system_status)
+            f_sessions = ex.submit(load_sessions, self.show_all_sessions)
+            f_docker = ex.submit(get_docker_info) if self.show_docker else None
+            f_boot = ex.submit(get_boot_services) if self.show_boot else None
+            f_procs = (
+                ex.submit(get_top_processes, CONFIG.get("top_processes_n", 10), self.proc_sort)
+                if self.show_processes else None
+            )
+
+            sys_status = f_sys.result()
+            sessions = f_sessions.result()
+            docker = f_docker.result() if f_docker else None
+            boot = f_boot.result() if f_boot else None
+            procs = f_procs.result() if f_procs else None
 
         enriched = []
         for s in sessions:
@@ -1571,21 +1683,12 @@ class MonitorApp(App):
                 "ctx_pct": ctx_pct, "extras": extras,
             })
 
-        procs = None
-        if self.show_processes:
-            n = CONFIG.get("top_processes_n", 10)
-            procs = get_top_processes(n=n, sort_by=self.proc_sort)
-
-        services_data = None
-        if self.show_services:
-            services_data = (get_docker_info(), get_boot_services())
-
         self.app.call_from_thread(
             self._apply_refresh,
-            quota, quota_age, sys_status, sessions, enriched, procs, services_data,
+            quota, quota_age, sys_status, sessions, enriched, procs, docker, boot,
         )
 
-    def _apply_refresh(self, quota, quota_age, sys_status, sessions, enriched, procs, services_data) -> None:
+    def _apply_refresh(self, quota, quota_age, sys_status, sessions, enriched, procs, docker, boot) -> None:
         """Roda na main thread — atualiza widgets atomicamente.
 
         Cota: só sobrescreve _last_quota se vier dado novo, senão mantém
@@ -1595,6 +1698,8 @@ class MonitorApp(App):
             self._last_quota = quota
         self._last_sessions = sessions
         self._last_enriched = enriched
+        self._last_docker = docker
+        self._last_boot = boot
         self._last_refresh_at = time.time()
 
         self.query_one(QuotaBar).update_quota(self._last_quota or {}, cache_age=quota_age)
@@ -1610,8 +1715,10 @@ class MonitorApp(App):
                 f"● Processos — top {n} por {sort_label}"
             )
 
-        if self.show_services and services_data is not None:
-            self.query_one(ServicesPanel).update_services(*services_data)
+        if self.show_docker and docker is not None:
+            self.query_one(DockerPanel).update_docker(docker)
+        if self.show_boot and boot is not None:
+            self.query_one(BootPanel).update_boot(boot)
 
         scope = "todas (vivas + mortas)" if self.show_all_sessions else "ativas"
         self.query_one("#session-label", Label).update(f"● Sessões {scope}")
@@ -1646,10 +1753,19 @@ class MonitorApp(App):
             section.remove_class("-visible")
         self.refresh_data()
 
-    def action_toggle_services(self) -> None:
-        self.show_services = not self.show_services
-        section = self.query_one("#services-section")
-        if self.show_services:
+    def action_toggle_docker(self) -> None:
+        self.show_docker = not self.show_docker
+        section = self.query_one("#docker-section")
+        if self.show_docker:
+            section.add_class("-visible")
+        else:
+            section.remove_class("-visible")
+        self.refresh_data()
+
+    def action_toggle_boot(self) -> None:
+        self.show_boot = not self.show_boot
+        section = self.query_one("#boot-section")
+        if self.show_boot:
             section.add_class("-visible")
         else:
             section.remove_class("-visible")
