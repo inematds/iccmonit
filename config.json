@@ -11,11 +11,13 @@
       "notes": "% de uso da cota (5h, 7d, 7d-sonnet). Azul=folgado, Verde=normal, Amarelo=atenção, Vermelho=crítico"
     },
     "context_pct": {
-      "blue":   10,
-      "green":  50,
-      "yellow": 75,
-      "red":    90,
-      "notes": "% da janela de contexto usada por sessão. >90% = risco de compaction automática"
+      "blue":           10,
+      "green":          30,
+      "yellow":         50,
+      "red":            80,
+      "critical":       80,
+      "critical_style": "blink bold magenta",
+      "notes": "% da janela de contexto usada por sessão. >80% = crítico (pisca magenta)"
     },
     "memory_kb": {
       "blue":   0,
@@ -73,6 +75,11 @@
   "chat": {
     "model": "claude-haiku-4-5-20251001",
     "max_tokens": 1024
+  },
+
+  "token_dashboard": {
+    "url": "http://127.0.0.1:8080",
+    "notes": "URL do Token Dashboard local. Aberto pela tecla [d] no monitor."
   },
 
   "top_processes_n": 10

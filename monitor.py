@@ -8,6 +8,7 @@ import re
 import subprocess
 import threading
 import time
+import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -22,15 +23,35 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Label, RichLog, Static
 
-VERSION = "v1.18.17"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
+VERSION = "v1.18.19"  # v1.xx.yy → xx=recurso, yy=bug (ambos sequenciais; só zeram quando muda a major)
 
 CLAUDE_DIR = Path.home() / ".claude"
 SESSIONS_DIR = CLAUDE_DIR / "sessions"
 PROJECTS_DIR = CLAUDE_DIR / "projects"
 LIMITS_CACHE = Path(f"/tmp/cc_limits_{os.getuid()}.json")
-CONTEXT_WINDOW = 1_000_000  # Opus/Sonnet 4.x
+def context_window_for(model: str) -> int:
+    """Retorna o tamanho do context window pelo nome do modelo.
+
+    Opus 4.7: 1M. Sonnet/Haiku: 200k (padrão; pode ser configurado pra 1M).
+    Se o total de tokens exceder 200k, o chamador deve usar 1M.
+    """
+    m = model.lower()
+    if "opus" in m:
+        return 1_000_000
+    return 200_000
 CONFIG_FILE = Path(__file__).parent / "config.json"
 CHAT_LOG = Path(__file__).parent / "chat.log"
+STATE_DIR = Path(__file__).parent / "state"
+INCIDENTS_FILE = STATE_DIR / "incidents.json"
+
+
+def read_recent_incidents(limit: int = 5) -> list[dict]:
+    """Lê eventos escritos por watchdogs (ex.: inemaimg-watchdog)."""
+    try:
+        data = json.loads(INCIDENTS_FILE.read_text())
+        return list(data.get("incidents", []))[-limit:][::-1]
+    except Exception:
+        return []
 
 
 def load_config() -> dict:
@@ -53,6 +74,8 @@ def color_for(value: float, key: str) -> str:
         return "green"
     if value <= t.get("yellow", 85):
         return "yellow"
+    if "critical" in t and value > t["critical"]:
+        return t.get("critical_style", "blink bold magenta")
     return "red"
 
 
@@ -358,7 +381,11 @@ def get_transcript_usage(session: dict) -> tuple[str, int, float]:
                                 "output_tokens",
                             ]
                         )
-                        pct = round(total * 100 / CONTEXT_WINDOW, 1)
+                        # Sonnet pode usar 200k ou 1M; se total excede 200k é 1M
+                        window = context_window_for(model)
+                        if total > 200_000:
+                            window = 1_000_000
+                        pct = round(total * 100 / window, 1)
                         return model, total, pct
             except Exception:
                 continue
@@ -644,7 +671,18 @@ class BootPanel(Static):
         services = boot["services"]
         active = sum(1 for s in services if s["active"])
         active_services = [s for s in services if s["active"]]
-        lines = [f"[bold]{active}/{len(services)} habilitados rodando[/]  [dim](use 6 pra lista completa)[/]"]
+        lines: list[str] = []
+        incidents = read_recent_incidents(limit=3)
+        if incidents:
+            lines.append("[bold red]Incidentes recentes:[/]")
+            for inc in incidents:
+                sev = inc.get("severity", "info")
+                color = {"crit": "red", "warn": "yellow"}.get(sev, "white")
+                ts = inc.get("ts", "")[:19].replace("T", " ")
+                msg = (inc.get("message") or "")[:60]
+                lines.append(f"  [{color}]●[/] [dim]{ts}[/] {msg}")
+            lines.append("")
+        lines.append(f"[bold]{active}/{len(services)} habilitados rodando[/]  [dim](use 6 pra lista completa)[/]")
         for s in active_services[:8]:
             lines.append(f"  [green]✓[/] {s['name'][:38]}")
         if len(active_services) > 8:
@@ -1757,6 +1795,7 @@ class MonitorApp(App):
         Binding("4", "open_modal('sessions')", "Sess"),
         Binding("5", "open_modal('docker')", "Dock"),
         Binding("6", "open_modal('boot')", "Boot"),
+        Binding("d", "open_dashboard", "Dashboard"),
         # ── layout split ──
         Binding("comma", "shrink_left", "←"),
         Binding("full_stop", "grow_left", "→"),
@@ -1926,6 +1965,23 @@ class MonitorApp(App):
 
     def action_refresh(self) -> None:
         self.refresh_data()
+
+    def action_open_dashboard(self) -> None:
+        """Abre o Token Dashboard (http://127.0.0.1:8080 por padrão) no navegador.
+
+        URL configurável em config.json → token_dashboard.url. Em modo textual-serve,
+        o navegador é o do servidor — neste caso, a notificação mostra a URL para
+        o usuário abrir manualmente.
+        """
+        url = CONFIG.get("token_dashboard", {}).get("url", "http://127.0.0.1:8080")
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+        try:
+            self.notify(f"Token Dashboard: {url}", title="Dashboard", timeout=8)
+        except Exception:
+            pass
 
     def action_toggle_all(self) -> None:
         self.show_all_sessions = not self.show_all_sessions
