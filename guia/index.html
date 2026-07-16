@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iccmonit — INEMA Claude Monitor</title>
+<meta name="description" content="TUI em Python que monitora todas as sessões Claude Code ativas na máquina em tempo real: cota 5h/7d, métricas por sessão e chat embutido via OAuth.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0c0c10; --bg2:#14141b; --card:#16161e; --line:#272730;
+    --txt:#e9e9ee; --mut:#9a9aa6; --amb:#E2A23B; --amb2:#f0c070; --sky:#38bdf8; --pro:#cbd5e1;
+    color-scheme:dark;
+  }
+  body.light{
+    --bg:#f6f7f9; --bg2:#eceef2; --card:#ffffff; --line:#e1e3ea;
+    --txt:#1a1a22; --mut:#5b5b68; --amb:#b9791d; --amb2:#a16207; --sky:#0369a1; --pro:#b45309;
+    color-scheme:light;
+  }
+  body.light .hero .glow{opacity:.5}
+  body.light pre{background:#0e0e14;color:#d6d6e0}
+  body.light pre .c{color:#8a8a98}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--txt);font:16px/1.65 Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  h1,h2,h3{font-family:Sora,sans-serif;line-height:1.15;margin:0}
+  a{color:var(--amb);text-decoration:none}
+  code,pre{font-family:"JetBrains Mono",monospace}
+  .wrap{max-width:1160px;margin:0 auto;padding:0 22px}
+  .mut{color:var(--mut)} .amb{color:var(--amb)}
+  .chip{display:inline-block;font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--amb);font-weight:600;font-family:Sora}
+  nav{position:sticky;top:0;z-index:30;backdrop-filter:blur(12px);background:rgba(12,12,16,.78);border-bottom:1px solid var(--line)}
+  nav .wrap{display:flex;align-items:center;gap:22px;height:60px}
+  nav .brand{display:flex;align-items:center;gap:8px;font-family:Sora;font-weight:800;letter-spacing:-.02em;color:var(--amb)}
+  nav .brand .emoji{font-size:1.25rem}
+  nav .sep{color:var(--mut);opacity:.45}
+  nav .inema{color:var(--sky);font-weight:600;font-size:.88rem;font-family:Sora}
+  nav .inema:hover{filter:brightness(1.15)}
+  nav .pro{color:var(--pro);font-weight:600;font-size:.88rem;font-family:Sora}
+  nav .pro:hover{filter:brightness(1.15)}
+  nav .clubpro{display:inline-flex;align-items:center;gap:6px}
+  nav .links{margin-left:auto;display:flex;align-items:center;gap:20px;font-size:.92rem}
+  nav .links a.sec{color:var(--mut)} nav .links a.sec:hover{color:var(--txt)}
+  .tgl{background:var(--bg2);border:1px solid var(--line);color:var(--txt);width:38px;height:38px;border-radius:10px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;font-size:1.05rem}
+  .tgl:hover{border-color:var(--amb)}
+  .btn{display:inline-block;background:var(--amb);color:#1a1206;font-weight:600;padding:.6em 1.05em;border-radius:10px;font-family:Sora}
+  .btn.ghost{background:transparent;color:var(--txt);border:1px solid var(--line)}
+  @media(max-width:760px){nav .links a.sec{display:none}}
+  .hero{position:relative;overflow:hidden;border-bottom:1px solid var(--line)}
+  .hero .glow{position:absolute;inset:-40% -20% auto auto;width:70%;height:600px;background:radial-gradient(closest-side,rgba(226,162,59,.22),transparent 70%);pointer-events:none}
+  .hero .wrap{display:grid;grid-template-columns:1.1fr .9fr;gap:40px;align-items:center;padding:74px 22px}
+  .hero h1{font-size:clamp(2.2rem,5vw,3.5rem);font-weight:800;letter-spacing:-.025em}
+  .hero p.lead{font-size:1.18rem;color:var(--mut);margin:1.1em 0 1.6em;max-width:34ch}
+  .hero .cta{display:flex;gap:12px;flex-wrap:wrap}
+  .hero figure{margin:0;border-radius:16px;overflow:hidden;border:1px solid var(--line);box-shadow:0 30px 80px -30px #000}
+  .hero figure img{width:100%;display:block}
+  @media(max-width:780px){.hero .wrap{grid-template-columns:1fr;padding:48px 22px}}
+  section{padding:62px 0;border-bottom:1px solid var(--line)}
+  section h2{font-size:clamp(1.5rem,3.4vw,2.1rem);font-weight:800;letter-spacing:-.02em}
+  section .sub{color:var(--mut);margin:.6em 0 2em;max-width:62ch}
+  .grid{display:grid;gap:16px}
+  .g3{grid-template-columns:repeat(3,1fr)} .g4{grid-template-columns:repeat(4,1fr)} .g2{grid-template-columns:repeat(2,1fr)}
+  @media(max-width:820px){.g3,.g4{grid-template-columns:1fr 1fr}}
+  @media(max-width:540px){.g2,.g3,.g4{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px}
+  .card h3{font-size:1.05rem;margin-bottom:.4em}
+  .card p{color:var(--mut);font-size:.92rem;margin:0}
+  .num{display:inline-flex;width:30px;height:30px;align-items:center;justify-content:center;border-radius:8px;background:rgba(226,162,59,.14);color:var(--amb);font-family:Sora;font-weight:800;font-size:.9rem;margin-bottom:.7em}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px}
+  .flow span{background:var(--bg2);border:1px solid var(--line);border-radius:999px;padding:.45em .9em;font-size:.85rem;font-family:Sora;font-weight:600}
+  .flow .arr{color:var(--amb);border:none;background:none;padding:0 .1em}
+  pre{background:#0a0a0e;border:1px solid var(--line);border-radius:12px;padding:16px 18px;overflow:auto;font-size:.86rem;line-height:1.6;color:#d6d6e0}
+  pre .c{color:#6f6f7c} pre .k{color:var(--amb2)} pre .s{color:#9ece6a}
+  .step{display:grid;grid-template-columns:46px 1fr;gap:16px;margin-bottom:26px}
+  .step .b{width:46px;height:46px;border-radius:12px;background:var(--amb);color:#1a1206;font-family:Sora;font-weight:800;font-size:1.25rem;display:flex;align-items:center;justify-content:center}
+  .step h3{font-size:1.12rem;margin-bottom:.3em}
+  .step p{color:var(--mut);margin:.2em 0 .7em}
+  .ex{display:grid;grid-template-columns:1fr;gap:18px}
+  .ex figure{margin:0;border-radius:14px;overflow:hidden;border:1px solid var(--line)}
+  .ex figure img{width:100%;display:block}
+  .ex figcaption{padding:12px 14px;font-size:.88rem;color:var(--mut);background:var(--card)}
+  .phase{display:flex;gap:14px;padding:16px 0;border-bottom:1px solid var(--line)}
+  .phase:last-child{border:none}
+  .phase .tag{flex:0 0 92px;font-family:Sora;font-weight:800;color:var(--amb)}
+  .phase .d strong{display:block;margin-bottom:.2em}
+  .phase .d span{color:var(--mut);font-size:.92rem}
+  footer{padding:46px 0;text-align:center;color:var(--mut);font-size:.9rem}
+  .pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:.3em .8em;font-size:.78rem;color:var(--mut);margin:0 4px}
+  table.k{width:100%;border-collapse:collapse;font-size:.88rem;margin-top:8px}
+  table.k th,table.k td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  table.k th{color:var(--mut);font-family:Sora;font-weight:600;font-size:.78rem;text-transform:uppercase;letter-spacing:.06em}
+</style>
+</head>
+<body>
+
+<nav><div class="wrap">
+  <a class="brand" href="#top"><span class="emoji">🖥️</span> iccmonit</a>
+  <span class="sep">|</span>
+  <span class="clubpro">
+    <a class="inema" href="https://inema.club" target="_blank" rel="noopener">INEMA.CLUB</a>
+    <span class="sep">-</span>
+    <a class="pro" href="https://inema.pro" target="_blank" rel="noopener">PRO</a>
+  </span>
+  <div class="links">
+    <a class="sec" href="#oque">O que é</a>
+    <a class="sec" href="#fluxo">Como funciona</a>
+    <a class="sec" href="#guia">Guia de uso</a>
+    <a class="sec" href="#exemplos">Exemplos</a>
+    <a class="sec" href="#roadmap">Roadmap</a>
+    <button class="tgl" id="themeToggle" aria-label="Alternar tema" title="Alternar tema">🌙</button>
+    <a class="btn" href="https://github.com/inematds/iccmonit" target="_blank" rel="noopener">GitHub</a>
+  </div>
+</div></nav>
+
+<header class="hero" id="top">
+  <div class="glow"></div>
+  <div class="wrap">
+    <div>
+      <span class="chip">TUI · Python · Textual</span>
+      <h1>Todas as sessões <span class="amb">Claude Code</span>, num painel só</h1>
+      <p class="lead">iccmonit roda num terminal separado e mostra em tempo real cota 5h/7d/7d-Sonnet, contexto e custo de cada sessão ativa, máquina, processos, serviços — e traz um chat embutido que já sabe o que está acontecendo no painel.</p>
+      <div class="cta">
+        <a class="btn" href="#guia">Começar o guia</a>
+        <a class="btn ghost" href="https://github.com/inematds/iccmonit" target="_blank" rel="noopener">Ver no GitHub</a>
+      </div>
+    </div>
+    <figure><img src="assets/hero.png" alt="iccmonit — painel de monitoramento de sessões Claude Code"></figure>
+  </div>
+</header>
+
+<section id="oque"><div class="wrap">
+  <span class="chip">O que é</span>
+  <h2>Visão consolidada de tudo que roda com Claude Code na máquina</h2>
+  <p class="sub">Pensado pra ficar aberto lado a lado com as sessões — sem precisar alternar de terminal pra saber quanto de cota sobrou ou qual sessão está pesada.</p>
+  <div class="grid g3">
+    <div class="card"><h3>📊 Cota oficial da API</h3><p>Barras de janela 5h, semanal e semanal-Sonnet lidas do mesmo cache (<code>/tmp/cc_limits_&lt;uid&gt;.json</code>) que o statusline padrão do Claude Code usa — não recalcula localmente, então não diverge do valor real.</p></div>
+    <div class="card"><h3>🗂️ Sessões ativas em tabela</h3><p>Uma linha por sessão viva (ou morta, com <kbd>a</kbd>): projeto, status idle/busy, modelo, % de contexto, tamanho do <code>CLAUDE.md</code>, memória, agentes lançados e skills invocadas.</p></div>
+    <div class="card"><h3>💬 Chat com OAuth do Claude Code</h3><p>Chat lateral (Haiku por padrão) que recebe o snapshot do painel como contexto — ou, ao focar numa sessão, o transcript dela — com comandos como <code>/diag</code> e <code>/docker</code>.</p></div>
+  </div>
+</div></section>
+
+<section id="fluxo"><div class="wrap">
+  <span class="chip">Como funciona</span>
+  <h2>Coleta em worker thread, refresh automático, TUI que não trava</h2>
+  <p class="sub">Cada fonte é lida direto do que o próprio Claude Code (ou o SO) já mantém — sem reimplementar cálculo de cota.</p>
+  <div class="flow">
+    <span>~/.claude/sessions/*.json</span><span class="arr">→</span>
+    <span>transcript JSONL (mtime mais recente)</span><span class="arr">→</span>
+    <span>/tmp/cc_limits_&lt;uid&gt;.json</span><span class="arr">→</span>
+    <span>worker thread (10s)</span><span class="arr">→</span>
+    <span>TUI Textual</span><span class="arr">→</span>
+    <span>Chat OAuth</span>
+  </div>
+  <div class="grid g3" style="margin-top:26px">
+    <div class="card"><h3>🧵 Coleta assíncrona</h3><p>Leitura de transcripts grandes, <code>nvidia-smi</code>, <code>docker ps</code> etc. roda numa worker thread — a TUI não congela, valores antigos ficam na tela até o novo lote chegar.</p></div>
+    <div class="card"><h3>🔀 Segue o JSONL mais recente</h3><p>O <code>sessionId</code> em <code>session.json</code> congela no boot; após <code>/clear</code> o monitor passa a seguir o arquivo de <code>mtime</code> mais novo em <code>~/.claude/projects/&lt;encoded-cwd&gt;/</code>.</p></div>
+    <div class="card"><h3>🌐 Modo web opcional</h3><p><code>textual-serve</code> empacota a mesma TUI num WebSocket + xterm.js, sem mudar código — útil pra acompanhar de outra máquina ou via túnel SSH.</p></div>
+  </div>
+</div></section>
+
+<section id="pre"><div class="wrap">
+  <span class="chip">Pré-requisitos</span>
+  <h2>O que precisa estar no ar antes de rodar</h2>
+  <p class="sub">Linux ou macOS (testado em Linux), Python 3.10+ e o Claude Code já logado nessa máquina.</p>
+  <div class="grid g3">
+    <div class="card"><h3>Python 3.10+</h3><p>Interpretador disponível no PATH.</p><pre><span class="c"># confirma versão</span>
+<span class="k">python3 --version</span></pre></div>
+    <div class="card"><h3>Claude Code logado</h3><p>Precisa de <code>~/.claude/.credentials.json</code> válido — é dali que vem o OAuth do chat.</p><pre><span class="c"># se ainda não logou</span>
+<span class="k">claude login</span></pre></div>
+    <div class="card"><h3>Statusline padrão rodando</h3><p>É ele que popula <code>/tmp/cc_limits_&lt;uid&gt;.json</code> com a cota oficial. Sem isso o painel de cota fica vazio.</p><pre><span class="c"># nada a instalar — vem com o Claude Code</span>
+<span class="k">ls /tmp/cc_limits_*.json</span></pre></div>
+  </div>
+</div></section>
+
+<section id="guia"><div class="wrap">
+  <span class="chip">Guia de uso · passo a passo</span>
+  <h2>Do clone ao painel rodando</h2>
+  <p class="sub">As dependências (<code>textual</code>, <code>anthropic</code>, <code>textual-serve</code>) são instaladas automaticamente pelo <code>start.sh</code> se faltarem.</p>
+
+  <div class="step"><div class="b">1</div><div>
+    <h3>Clonar o repo</h3>
+    <p>Clona e dá permissão de execução ao entrypoint.</p>
+<pre><span class="k">git clone git@github.com:inematds/iccmonit.git
+cd iccmonit
+chmod +x start.sh</span></pre>
+  </div></div>
+
+  <div class="step"><div class="b">2</div><div>
+    <h3>(Opcional) instalar dependências manualmente</h3>
+    <p>O <code>start.sh</code> instala sozinho na primeira vez, mas dá pra adiantar.</p>
+<pre><span class="k">pip install textual anthropic --break-system-packages</span>  <span class="c"># modo terminal</span>
+<span class="k">pip install textual-serve --break-system-packages</span>       <span class="c"># modo web (extra)</span></pre>
+  </div></div>
+
+  <div class="step"><div class="b">3</div><div>
+    <h3>Rodar no terminal</h3>
+    <p>Abre a TUI no terminal atual — ideal lado a lado com as sessões Claude Code.</p>
+<pre><span class="k">./start.sh</span></pre>
+  </div></div>
+
+  <div class="step"><div class="b">4</div><div>
+    <h3>Ou rodar em modo web</h3>
+    <p>Empacota a mesma TUI num WebSocket + xterm.js no navegador. Bind padrão é só local; <code>lan</code> expõe pra sub-rede (sem autenticação — use com cuidado, ou prefira túnel SSH pra acesso remoto).</p>
+<pre><span class="k">./start.sh web</span>                       <span class="c"># 127.0.0.1:8000 — só este host</span>
+<span class="k">./start.sh web 9000</span>                  <span class="c"># porta custom</span>
+<span class="k">./start.sh web 8000 lan</span>              <span class="c"># IP da LAN auto-detectado</span>
+<span class="k">ssh -L 8000:localhost:8000 usuario@maquina</span>  <span class="c"># acesso remoto seguro</span></pre>
+  </div></div>
+
+  <div class="step"><div class="b">5</div><div>
+    <h3>Navegar pela TUI</h3>
+    <p>Duas colunas redimensionáveis (50/50 por padrão): painéis de Cota/Máquina/Processos/Sessões à esquerda, Chat à direita.</p>
+    <table class="k">
+      <tr><th>Tecla</th><th>Ação</th></tr>
+      <tr><td><code>r</code></td><td>Refresh manual</td></tr>
+      <tr><td><code>a</code></td><td>Sessões ativas ↔ todas (vivas + mortas)</td></tr>
+      <tr><td><code>p</code> / <code>v</code></td><td>Liga/desliga painel Processos / Serviços</td></tr>
+      <tr><td><code>1</code>–<code>5</code></td><td>Abre Cota / Máquina / Processos / Sessões / Serviços em fullscreen</td></tr>
+      <tr><td><code>,</code> <code>.</code> <code>=</code></td><td>Redimensiona colunas (encolhe / aumenta / reseta 50/50)</td></tr>
+      <tr><td><code>q</code></td><td>Sair (ou fecha modal com <code>Esc</code>)</td></tr>
+    </table>
+  </div></div>
+
+  <div class="step"><div class="b">6</div><div>
+    <h3>Usar o chat embutido</h3>
+    <p>Modo geral responde sobre o painel inteiro; selecione uma linha da tabela de sessões (↑/↓ + Enter) pra focar o chat no transcript daquela sessão.</p>
+<pre><span class="k">/diag</span>     <span class="c"># diagnóstico — só o que está 🟡/🔴, com sugestão de skill</span>
+<span class="k">/skills</span>   <span class="c"># session-statusline / memory-audit / session-handoff</span>
+<span class="k">/docker</span>   <span class="c"># lista containers, ou "/docker &lt;nome&gt; start|stop|restart|logs"</span>
+<span class="k">/clear</span>    <span class="c"># volta ao modo geral</span></pre>
+  </div></div>
+</div></section>
+
+<section id="exemplos"><div class="wrap">
+  <span class="chip">Exemplos</span>
+  <h2>O painel em execução</h2>
+  <p class="sub">Cota, sessões e chat focado, tudo na mesma tela.</p>
+  <div class="ex">
+    <figure><img src="assets/ex1.jpg" alt="iccmonit rodando — painel de cota, sessões e chat"><figcaption>Layout padrão: Cota → Máquina → Sessões à esquerda, Chat ocupando a coluna direita.</figcaption></figure>
+  </div>
+</div></section>
+
+<section id="roadmap"><div class="wrap">
+  <span class="chip">Roadmap</span>
+  <h2>V1 hoje, V2 em pesquisa</h2>
+  <p class="sub">V1 é só leitura — observa transcripts e cota sem interferir nas sessões.</p>
+  <div class="phase"><div class="tag">V1 · atual</div><div class="d"><strong>Painel + chat observador</strong><span>Cota, sessões, chat geral e chat focado (read-only) + modo web via textual-serve.</span></div></div>
+  <div class="phase"><div class="tag">V2 · planejado</div><div class="d"><strong>Interação remota com a sessão</strong><span>Injetar prompts numa sessão ativa como se fosse no terminal original — mecanismo ainda a investigar (stdin do processo, IPC, ou <code>claude --resume</code> paralelo). Sem API oficial pra isso hoje.</span></div></div>
+</div></section>
+
+<footer>
+  <div class="wrap">
+    <div class="pill">Python</div><div class="pill">Textual</div><div class="pill">OAuth Claude Code</div>
+    <p style="margin-top:18px">iccmonit · TUI de monitoramento pra sessões Claude Code ·
+      <a href="https://github.com/inematds/iccmonit">github.com/inematds/iccmonit</a> ·
+      <a href="https://inema.club">INEMA.CLUB</a></p>
+  </div>
+</footer>
+
+<script>
+  (function(){
+    var KEY='iccmonit-theme';
+    var b=document.body, t=document.getElementById('themeToggle');
+    if(localStorage.getItem(KEY)==='light'){ b.classList.add('light'); t.textContent='☀️'; }
+    t.addEventListener('click',function(){
+      var light=b.classList.toggle('light');
+      t.textContent=light?'☀️':'🌙';
+      localStorage.setItem(KEY, light?'light':'dark');
+    });
+  })();
+</script>
+</body>
+</html>
